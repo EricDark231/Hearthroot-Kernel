@@ -138,27 +138,55 @@ jobs:
           # sync-resukisu 落地时固定在 drivers/kernelsu/Kbuild 里的 ReSukiSU commit
           RSU_SHA=$(grep -E '^KSU_COMMIT_SHA[[:space:]]*:= *[0-9a-f]{8}[[:space:]]*$' drivers/kernelsu/Kbuild | head -n1 | awk '{print $3}')
           echo "landed ReSukiSU commit: ${RSU_SHA:-<none>}"
-          mkdir -p manager-apk
 
           fetch_apks() { # $1 = ReSukiSU CI run id
-            rm -rf manager-apk && mkdir -p manager-apk
-            for name in Manager-release Spoofed-Manager-release; do
-              local art
-              art=$(gh api "repos/$RSU_REPO/actions/runs/$1/artifacts?per_page=100" \
-                    --jq ".artifacts[] | select(.name==\"$name\" and .expired==false) | .id" | head -n1)
-              [ -n "$art" ] || return 1
-              gh api "repos/$RSU_REPO/actions/artifacts/$art/zip" > "$name.zip"
-              unzip -oq "$name.zip" -d manager-apk
-            done
-            # 只保留 arm64-v8a 变体并按变种分目录（剔除 universal / armeabi-v7a / x86_64）
-            find manager-apk -type f -name '*.apk' ! -name '*arm64-v8a*' -delete
+            # 两个 artifact 的产物是同名的（都是 ReSukiSU_<ver>_<code>-<abi>-release.apk），
+            # 所以必须各自解到独立目录：共用暂存目录时后解压的 spoofed 包会覆盖掉标准包，
+            # 结果只剩 1 个 apk。解出的 spoofed 包再改名带 spoofed 标记，两者可共存。
             rm -rf manager manager-spoofed
             mkdir -p manager manager-spoofed
-            find manager-apk -type f -name '*arm64-v8a-release.apk' ! -name '*spoofed*' -exec mv {} manager/ \;
-            find manager-apk -type f -name '*arm64-v8a-release.apk' -name '*spoofed*' -exec mv {} manager-spoofed/ \;
-            local n
-            n=$(find manager manager-spoofed -type f -name '*.apk' | wc -l)
-            [ "$n" -ge 2 ] || { echo "::error::expected 2 arm64-v8a manager APKs (release + spoofed), got $n"; return 1; }
+            local tmp="$RUNNER_TEMP/rsu-apks"
+            rm -rf "$tmp" && mkdir -p "$tmp"
+
+            # 1) 标准包 Manager-release -> manager/
+            local art_rel
+            art_rel=$(gh api "repos/$RSU_REPO/actions/runs/$1/artifacts?per_page=100" \
+                  --jq '.artifacts[] | select(.name=="Manager-release" and .expired==false) | .id' | head -n1)
+            [ -n "$art_rel" ] || return 1
+            gh api "repos/$RSU_REPO/actions/artifacts/$art_rel/zip" > "$tmp/Manager-release.zip"
+            unzip -oq "$tmp/Manager-release.zip" -d manager
+            # 只保留 arm64-v8a 变体（剔除 universal / armeabi-v7a / riscv64 / x86_64）
+            find manager -type f -name '*.apk' ! -name '*arm64-v8a*' -delete
+            test -n "$(find manager -type f -name '*.apk')" || return 1
+
+            # 2) spoofed 包 Spoofed-Manager-release -> manager-spoofed/
+            local art_spf
+            art_spf=$(gh api "repos/$RSU_REPO/actions/runs/$1/artifacts?per_page=100" \
+                  --jq '.artifacts[] | select(.name=="Spoofed-Manager-release" and .expired==false) | .id' | head -n1)
+            [ -n "$art_spf" ] || return 1
+            gh api "repos/$RSU_REPO/actions/artifacts/$art_spf/zip" > "$tmp/Spoofed-Manager-release.zip"
+            unzip -oq "$tmp/Spoofed-Manager-release.zip" -d manager-spoofed
+            find manager-spoofed -type f -name '*.apk' ! -name '*arm64-v8a*' -delete
+            test -n "$(find manager-spoofed -type f -name '*.apk')" || return 1
+
+            # 3) spoofed 包改名（文件名加 spoofed 标记），避免与标准包在文件层面同名
+            #    注意只判 basename：路径里的目录名 manager-spoofed 本身就含 spoofed
+            local f b
+            for f in manager-spoofed/*.apk; do
+              [ -f "$f" ] || continue
+              b=${f##*/}
+              case "$b" in
+                *spoofed*) continue ;;
+              esac
+              mv "$f" "manager-spoofed/${b%-release.apk}-spoofed-release.apk" 2>/dev/null \
+                || mv "$f" "manager-spoofed/${b%.apk}-spoofed.apk"
+            done
+
+            # 两个目录都必须有产物，缺一即换下一个候选 run
+            local n1 n2
+            n1=$(find manager -type f -name '*.apk' | wc -l)
+            n2=$(find manager-spoofed -type f -name '*.apk' | wc -l)
+            [ "$n1" -ge 1 ] && [ "$n2" -ge 1 ] || { echo "::error::expected arm64-v8a manager APKs in both manager and manager-spoofed, got ($n1, $n2)"; return 1; }
           }
 
           RUN_ID=""
