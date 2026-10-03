@@ -35,7 +35,7 @@ permissions:
   actions: read
 
 env:
-  KERNEL_BRANCH: bsp-rodin-v-oss-upstream
+  KERNEL_BRANCH: kernel-eric-dev
   BUILD_WORKFLOW: build-kernel.yml
   RSU_REPO: ReSukiSU/ReSukiSU
 

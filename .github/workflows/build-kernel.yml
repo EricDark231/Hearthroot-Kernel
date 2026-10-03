@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 env:
-  KERNEL_BRANCH: bsp-rodin-v-oss-upstream
+  KERNEL_BRANCH: kernel-eric-dev
   CLANG_VER: clang-r596125
   # clang-r596125 预编译目录所在的 googlesource 分支（注意不是
   # mirror-goog-llvm-r596125-release，那是 LLVM 源码镜像，没有预编译产物）
