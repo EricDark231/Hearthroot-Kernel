@@ -125,9 +125,18 @@ jobs:
           set -euo pipefail
           git clone --depth=1 -b gki-2.0 https://github.com/WildKernels/AnyKernel3.git
           rm -rf AnyKernel3/.git
-          # 设备启动只认名为 Image 的 blob；内容为 lz4 legacy 压缩的内核
+          # Device expects the kernel blob to be named Image; its contents use legacy LZ4 compression
           cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
-          sed -i "s|^kernel.string=.*|kernel.string=Hearthroot ${KERNEL_RELEASE} for rodin (ReSukiSU)|" AnyKernel3/anykernel.sh
+
+          # Hearthroot custom AnyKernel3 installer
+          cp packaging/anykernel/anykernel.sh AnyKernel3/anykernel.sh
+          sed -i "s|@KERNEL_RELEASE@|${KERNEL_RELEASE}|g" AnyKernel3/anykernel.sh
+
+          # Ensure the release placeholder was completely replaced
+          if grep -q '@KERNEL_RELEASE@' AnyKernel3/anykernel.sh; then
+            echo "::error::Hearthroot AnyKernel3 version placeholder was not replaced"
+            exit 1
+          fi
           # 不再打包外层 zip：artifact 下载下来本身就是可刷的 AK3 zip
 
       - name: Fetch matching ReSukiSU manager APKs
