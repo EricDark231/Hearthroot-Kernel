@@ -21,9 +21,9 @@ env:
   # mirror-goog-llvm-r596125-release，那是 LLVM 源码镜像，没有预编译产物）
   CLANG_BRANCH: mirror-goog-main-llvm-toolchain-source
   RSU_REPO: ReSukiSU/ReSukiSU
-  # 构建时主机标识：内核 banner 会显示为 Kbuild@114514
-  BUILD_USER: Kbuild
-  BUILD_HOST: '114514'
+  # 构建时主机标识：内核 banner 会显示为 EricDark231@Hearthroot
+  BUILD_USER: EricDark231
+  BUILD_HOST: 'Hearthroot'
 
 jobs:
   build:
@@ -48,13 +48,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flex bison bc libelf-dev libssl-dev dwarves lz4 zip unzip
 
-      - name: Set build host name (Kbuild@114514)
+      - name: Set build host name (EricDark231@Hearthroot)
         run: |
           set -euo pipefail
           # hostname 本身不允许 '@'，所以 runner 主机名用等价的合法写法，
-          # 并额外用 KBUILD_BUILD_USER/HOST 让内核 banner 精确显示 Kbuild@114514
-          sudo hostname 'Kbuild@114514' 2>/dev/null \
-            || sudo hostnamectl set-hostname 'Kbuild-114514' 2>/dev/null \
+          # 并额外用 KBUILD_BUILD_USER/HOST 让内核 banner 精确显示 EricDark231@Hearthroot
+          sudo hostname 'EricDark231@Hearthroot' 2>/dev/null \
+            || sudo hostnamectl set-hostname 'Hearthroot' 2>/dev/null \
             || true
           echo "runner hostname now: $(hostname)"
           {
@@ -127,7 +127,7 @@ jobs:
           rm -rf AnyKernel3/.git
           # 设备启动只认名为 Image 的 blob；内容为 lz4 legacy 压缩的内核
           cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
-          sed -i "s|^kernel.string=.*|kernel.string=Rodin ${KERNEL_RELEASE} (ReSukiSU)|" AnyKernel3/anykernel.sh
+          sed -i "s|^kernel.string=.*|kernel.string=Hearthroot ${KERNEL_RELEASE} for rodin (ReSukiSU)|" AnyKernel3/anykernel.sh
           # 不再打包外层 zip：artifact 下载下来本身就是可刷的 AK3 zip
 
       - name: Fetch matching ReSukiSU manager APKs
@@ -213,30 +213,30 @@ jobs:
         with:
           # artifact 根目录即 AK3 包内容（anykernel.sh / Image / META-INF/...），
           # 下载得到的 zip 无需再解包即可刷入
-          name: Rodin-${{ env.KERNEL_RELEASE }}-AnyKernel3
+          name: Hearthroot-rodin-${{ env.KERNEL_RELEASE }}-AnyKernel3
           path: AnyKernel3/**
           if-no-files-found: error
 
       - name: Upload ReSukiSU manager APK (release, arm64-v8a)
         uses: actions/upload-artifact@v4
         with:
-          name: rodin-${{ env.KERNEL_RELEASE }}-manager
+          name: Hearthroot-rodin-${{ env.KERNEL_RELEASE }}-manager
           path: manager/*.apk
           if-no-files-found: error
 
       - name: Upload ReSukiSU manager APK (spoofed, arm64-v8a)
         uses: actions/upload-artifact@v4
         with:
-          name: rodin-${{ env.KERNEL_RELEASE }}-manager-spoofed
+          name: Hearthroot-rodin-${{ env.KERNEL_RELEASE }}-manager-spoofed
           path: manager-spoofed/*.apk
           if-no-files-found: error
 
       - name: Build summary
         run: |
           {
-            echo "### Rodin kernel build"
+            echo "### Hearthroot Kernel"
             echo "- kernel: \`${KERNEL_RELEASE}\` (Image.lz4 = lz4 legacy, magic 02214c18 verified)"
-            echo "- build host: Kbuild@114514"
-            echo "- AK3 flashable zip: artifact \`Rodin-${KERNEL_RELEASE}-AnyKernel3\` (downloaded zip is directly flashable, kernel blob Image = lz4 legacy)"
-            echo "- ReSukiSU manager (arm64-v8a only): artifacts \`rodin-${KERNEL_RELEASE}-manager\` / \`rodin-${KERNEL_RELEASE}-manager-spoofed\` from [CI run]($RSU_RUN_URL)"
+            echo "- build host: EricDark231@Hearthroot"
+            echo "- AK3 flashable zip: artifact \`Hearthroot-rodin-${KERNEL_RELEASE}-AnyKernel3\` (downloaded zip is directly flashable, kernel blob Image = lz4 legacy)"
+            echo "- ReSukiSU manager (arm64-v8a only): artifacts \`Hearthroot-rodin-${KERNEL_RELEASE}-manager\` / \`Hearthroot-rodin-${KERNEL_RELEASE}-manager-spoofed\` from [CI run]($RSU_RUN_URL)"
           } >> "$GITHUB_STEP_SUMMARY"

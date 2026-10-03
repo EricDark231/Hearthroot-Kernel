@@ -117,7 +117,7 @@ jobs:
       - name: Extract kernel banner (version / build time / toolchain)
         run: |
           set -euo pipefail
-          REL_FROM_ARTIFACT="${AK3_NAME#Rodin-}"
+          REL_FROM_ARTIFACT="${AK3_NAME#Hearthroot-rodin-}"
           REL_FROM_ARTIFACT="${REL_FROM_ARTIFACT%-AnyKernel3}"
           KREL="$REL_FROM_ARTIFACT"
           BLDTIME="$(date -u -d "$RUN_CREATED_AT" '+%a %b %e %H:%M:%S UTC %Y')"
@@ -211,8 +211,8 @@ jobs:
           fi
 
           mkdir -p out
-          cp "$RUNNER_TEMP/dl/ak3.zip" "out/AnyKernel3_${SHORT}.zip"
-          ASSETS=("out/AnyKernel3_${SHORT}.zip")
+          cp "$RUNNER_TEMP/dl/ak3.zip" "out/Hearthroot-rodin-${SHORT}.zip"
+          ASSETS=("out/Hearthroot-rodin-${SHORT}.zip")
           while IFS= read -r apk; do
             [ -n "$apk" ] || continue
             cp "$apk" "out/$(basename "$apk")"
