@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 env:
-  KERNEL_BRANCH: kernel-eric-dev
+  KERNEL_BRANCH: hearthroot-dev
   CLANG_VER: clang-r596125
   # clang-r596125 预编译目录所在的 googlesource 分支（注意不是
   # mirror-goog-llvm-r596125-release，那是 LLVM 源码镜像，没有预编译产物）
@@ -229,14 +229,14 @@ jobs:
       - name: Upload ReSukiSU manager APK (release, arm64-v8a)
         uses: actions/upload-artifact@v4
         with:
-          name: Hearthroot-rodin-${{ env.KERNEL_RELEASE }}-manager
+          name: ReSukiSU-Manager-arm64-v8a
           path: manager/*.apk
           if-no-files-found: error
 
       - name: Upload ReSukiSU manager APK (spoofed, arm64-v8a)
         uses: actions/upload-artifact@v4
         with:
-          name: Hearthroot-rodin-${{ env.KERNEL_RELEASE }}-manager-spoofed
+          name: ReSukiSU-Manager-Spoofed-arm64-v8a
           path: manager-spoofed/*.apk
           if-no-files-found: error
 
@@ -247,5 +247,5 @@ jobs:
             echo "- kernel: \`${KERNEL_RELEASE}\` (Image.lz4 = lz4 legacy, magic 02214c18 verified)"
             echo "- build host: EricDark231@Hearthroot"
             echo "- AK3 flashable zip: artifact \`Hearthroot-rodin-${KERNEL_RELEASE}-AnyKernel3\` (downloaded zip is directly flashable, kernel blob Image = lz4 legacy)"
-            echo "- ReSukiSU manager (arm64-v8a only): artifacts \`Hearthroot-rodin-${KERNEL_RELEASE}-manager\` / \`Hearthroot-rodin-${KERNEL_RELEASE}-manager-spoofed\` from [CI run]($RSU_RUN_URL)"
+            echo "- ReSukiSU manager (arm64-v8a only): artifacts \`ReSukiSU-Manager-arm64-v8a\` / \`ReSukiSU-Manager-Spoofed-arm64-v8a\` from [CI run]($RSU_RUN_URL)"
           } >> "$GITHUB_STEP_SUMMARY"

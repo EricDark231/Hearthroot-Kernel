@@ -35,7 +35,7 @@ permissions:
   actions: read
 
 env:
-  KERNEL_BRANCH: kernel-eric-dev
+  KERNEL_BRANCH: hearthroot-dev
   BUILD_WORKFLOW: build-kernel.yml
   RSU_REPO: ReSukiSU/ReSukiSU
 
@@ -83,9 +83,9 @@ jobs:
           while IFS=$'\t' read -r id name; do
             [ -n "$id" ] || continue
             case "$name" in
-              *-AnyKernel3)      AK3_ID="$id";   AK3_NAME="$name" ;;
-              *-manager-spoofed) SPOOF_ID="$id"; SPOOF_NAME="$name" ;;
-              *-manager)         MGR_ID="$id";   MGR_NAME="$name" ;;
+              *-AnyKernel3)                         AK3_ID="$id";   AK3_NAME="$name" ;;
+              ReSukiSU-Manager-Spoofed-arm64-v8a)  SPOOF_ID="$id"; SPOOF_NAME="$name" ;;
+              ReSukiSU-Manager-arm64-v8a)          MGR_ID="$id";   MGR_NAME="$name" ;;
             esac
           done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
                    --jq '.artifacts[] | select(.expired==false) | "\(.id)\t\(.name)"')
