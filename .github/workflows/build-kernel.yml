@@ -62,8 +62,15 @@ jobs:
             echo "KBUILD_BUILD_HOST=${BUILD_HOST}"
           } >> "$GITHUB_ENV"
           echo "kernel banner will report: ${BUILD_USER}@${BUILD_HOST}"
+      - name: Cache clang-r596125
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang
+          key: hearthroot-clang-${{ runner.os }}-${{ env.CLANG_VER }}
 
       - name: Download clang-r596125
+        if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           CLANG_DIR="$RUNNER_TEMP/clang"
@@ -98,7 +105,17 @@ jobs:
             mv "$RUNNER_TEMP/clang-src/$CLANG_VER"/* "$CLANG_DIR"/
           fi
           test -x "$CLANG_DIR/bin/clang" || { echo "::error::clang binary not found after download"; ls -la "$CLANG_DIR"; exit 1; }
+
+      - name: Setup Clang
+        run: |
+          set -euo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          test -x "$CLANG_DIR/bin/clang" || {
+            echo "::error::cached/downloaded clang binary not found"
+            exit 1
+          }
           echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          echo "Clang cache hit: ${{ steps.clang-cache.outputs.cache-hit }}"
           "$CLANG_DIR/bin/clang" --version
 
       - name: Build kernel (gki_defconfig -> Image + Image.lz4)
