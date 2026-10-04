@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="https://github.com/EricDark231/Hearthroot-Kernel/blob/hearthroot-dev/Banner.png?raw=true" alt="Banner de presentación" width="100%">
+</p>
 <h1 align="center">Hearthroot Kernel</h1>
 
 <p align="center">
