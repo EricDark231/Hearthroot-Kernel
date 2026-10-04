@@ -15,6 +15,13 @@ config MQ_IOSCHED_KYBER
 	  multiqueue and other fast devices. Given target latencies for reads and
 	  synchronous writes, it will self-tune queue depths to achieve that
 	  goal.
+config MQ_IOSCHED_ADIOS
+	tristate "Adaptive Deadline I/O scheduler"
+	default y
+	help
+	  The Adaptive Deadline I/O Scheduler (ADIOS) is a multi-queue
+	  I/O scheduler designed to provide low latency through adaptive
+	  deadline scheduling.
 
 config IOSCHED_BFQ
 	tristate "BFQ I/O scheduler"
