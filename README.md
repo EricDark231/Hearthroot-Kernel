@@ -81,7 +81,7 @@ life and everyday stability.
 | Architecture | ARM64 |
 | Kernel | Linux 6.6.144 |
 | Kernel base | Android Common Kernel / Xiaomi |
-| Android | Android 15 / Android 16 |
+| Android | Android 16 / Android 17 |
 | Root implementation | ReSukiSU |
 | SUSFS | 2.3.0 |
 | Primary development device | POCO X7 Pro |
