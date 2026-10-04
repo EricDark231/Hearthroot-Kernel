@@ -196,11 +196,37 @@ jobs:
           fi
           NOTES="$RUNNER_TEMP/notes.md"
           {
-            printf '内核版本：%s\n' "$KREL"
-            printf '构建时间：%s\n' "$BLDTIME"
-            printf '构建工具链：%s\n' "$TOOLCHAIN"
+            printf '# 🌿 Hearthroot Kernel\n\n'
+            printf 'Custom kernel for **POCO X7 Pro (rodin)**, focused on performance, stability and kernel-level root integration.\n\n'
+
+            printf '## ✨ Features\n\n'
+            printf -- '- **ReSukiSU** built into the kernel\n'
+            printf -- '- **SUSFS** built-in for advanced root hiding capabilities\n'
+            printf -- '- **Baseband-guard (BBG)** for kernel-level protection of critical partitions\n'
+            printf -- '- **Cortex-A725** compiler tuning\n'
+            printf -- '- **ThinLTO** link-time optimization\n'
+            printf -- '- **AutoFDO** profile-guided optimization\n'
+            printf -- '- **BBRv3** TCP congestion control with **fq** queueing discipline\n'
+            printf -- '- **ZSTD 1.5.7**\n'
+            printf -- '- **ZRAM** with LZ4 as the default compression algorithm\n'
+            printf -- '- Built with the Android LLVM/Clang toolchain\n'
             printf '\n'
-            printf '变更：\n'
+
+            printf '## 🔧 Build Information\n\n'
+            printf -- '- **Kernel:** `%s`\n' "$KREL"
+            printf -- '- **Build date:** `%s`\n' "$BLDTIME"
+            printf -- '- **Toolchain:** `%s`\n' "$TOOLCHAIN"
+            printf -- '- **Device:** POCO X7 Pro (`rodin`)\n'
+            printf -- '- **Tested on:** Android 16/Android 17/AOSP\n'
+            printf '\n'
+
+            printf '## 📦 Included Downloads\n\n'
+            printf -- '- Hearthroot AnyKernel3 flashable package\n'
+            printf -- '- ReSukiSU Manager APK when available\n'
+            printf -- '- ReSukiSU Spoofed Manager APK when available\n'
+            printf '\n'
+
+            printf '## 📝 Changes\n\n'
             cat "$RUNNER_TEMP/changes.md"
           } > "$NOTES"
           echo "----- release notes -----"
