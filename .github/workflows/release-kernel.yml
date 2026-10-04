@@ -183,6 +183,7 @@ jobs:
           # 本仓库是 fork，org/repo 的 workflow 默认权限为只读，GITHUB_TOKEN 创建 release
           # 会被拒（HTTP 403: Resource not accessible by integration），因此改用 PAT
           PAT: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ github.token }}
           IN_TAG: ${{ inputs.tag }}
           IN_TITLE: ${{ inputs.title }}
           IN_PRERELEASE: ${{ inputs.prerelease }}
