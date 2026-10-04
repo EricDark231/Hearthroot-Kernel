@@ -198,23 +198,54 @@ jobs:
             [ "$n1" -ge 1 ] && [ "$n2" -ge 1 ] || { echo "::error::expected arm64-v8a manager APKs in both manager and manager-spoofed, got ($n1, $n2)"; return 1; }
           }
 
-          # El Manager es un producto independiente del commit del módulo
-          # ReSukiSU integrado en el kernel. Usamos el último Build Manager
-          # exitoso de main que contenga ambos artifacts arm64-v8a.
-          RUN_ID=""
-          for cand in $(gh api "repos/$RSU_REPO/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=20" \
-                        --jq '.workflow_runs[].id'); do
-            echo "trying ReSukiSU main Build Manager run $cand"
-            RUN_ID="$cand"
-            fetch_apks "$cand" && break || RUN_ID=""
-          done
-
-          [ -n "$RUN_ID" ] || {
-            echo "::error::no usable ReSukiSU Build Manager artifacts found"
+          # El Manager debe provenir exactamente del mismo commit de ReSukiSU
+          # integrado en el kernel. Kbuild conserva el SHA corto (8 caracteres),
+          # mientras que GitHub Actions devuelve el SHA completo.
+          [ -n "${RSU_SHA:-}" ] || {
+            echo "::error::could not determine landed ReSukiSU commit from drivers/kernelsu/Kbuild"
             exit 1
           }
 
-          RSU_MANAGER_SHA=$(gh api "repos/$RSU_REPO/actions/runs/$RUN_ID" --jq '.head_sha')
+          RUN_ID=""
+          RSU_MANAGER_SHA=""
+
+          for page in 1 2 3 4 5; do
+            echo "searching ReSukiSU Build Manager runs for ${RSU_SHA} (page ${page})"
+
+            while IFS=$'\t' read -r cand cand_sha; do
+              [ -n "$cand" ] || continue
+              [ -n "$cand_sha" ] || continue
+
+              case "$cand_sha" in
+                "${RSU_SHA}"*)
+                  echo "found matching Build Manager run ${cand} (${cand_sha})"
+                  if fetch_apks "$cand"; then
+                    RUN_ID="$cand"
+                    RSU_MANAGER_SHA="$cand_sha"
+                    break 2
+                  else
+                    echo "::warning::matching run ${cand} has no usable Manager artifacts"
+                  fi
+                  ;;
+              esac
+            done < <(
+              gh api "repos/$RSU_REPO/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=100&page=${page}" \
+                --jq '.workflow_runs[] | [.id, .head_sha] | @tsv'
+            )
+          done
+
+          [ -n "$RUN_ID" ] || {
+            echo "::error::no usable ReSukiSU Build Manager artifacts found for kernel commit ${RSU_SHA}"
+            exit 1
+          }
+
+          case "$RSU_MANAGER_SHA" in
+            "${RSU_SHA}"*) ;;
+            *)
+              echo "::error::ReSukiSU Manager commit ${RSU_MANAGER_SHA} does not match kernel commit ${RSU_SHA}"
+              exit 1
+              ;;
+          esac
           RSU_MANAGER_SHA_SHORT="${RSU_MANAGER_SHA:0:12}"
           RSU_RUN_URL="https://github.com/$RSU_REPO/actions/runs/$RUN_ID"
 
