@@ -200,8 +200,9 @@ jobs:
             printf 'Custom kernel for **POCO X7 Pro (rodin)**, focused on performance, stability and kernel-level root integration.\n\n'
 
             printf '## ✨ Features\n\n'
-            printf -- '- **BakaSU** built into the kernel\n'
-            printf -- '- **SUSFS** built-in for advanced root hiding capabilities\n'
+            printf -- '- **BakaSU** kernel-level root integration with **SUSFS** support\n'
+            printf -- '- **ADIOS 3.3.0** I/O scheduler available for runtime selection\n'
+            printf -- '- Native **none** I/O scheduler policy preserved by default\n'
             printf -- '- **Baseband-guard (BBG)** for kernel-level protection of critical partitions\n'
             printf -- '- **Cortex-A725** compiler tuning\n'
             printf -- '- **ThinLTO** link-time optimization\n'
