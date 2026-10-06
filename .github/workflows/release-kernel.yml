@@ -5,7 +5,7 @@ name: release-kernel
 #   - 内核版本 / 构建时间 / 构建工具链 从 AK3 包内 Image 的 Linux banner 中提取，
 #     提取失败时回退到 artifact 名 / 构建记录时间
 #   - 变更内容优先用手动输入的 Markdown，留空时按「上一个 tag..本次构建 commit」自动生成
-# 产物（assets）：AnyKernel3 可刷包 + ReSukiSU manager（release / spoofed，arm64-v8a）
+# 产物（assets）：AnyKernel3 可刷包 + BakaSU manager（release / spoofed，arm64-v8a）
 
 on:
   workflow_dispatch:
@@ -37,7 +37,6 @@ permissions:
 env:
   KERNEL_BRANCH: hearthroot-dev
   BUILD_WORKFLOW: build-kernel.yml
-  RSU_REPO: ReSukiSU/ReSukiSU
 
 jobs:
   release:
@@ -84,8 +83,8 @@ jobs:
             [ -n "$id" ] || continue
             case "$name" in
               *-AnyKernel3)                         AK3_ID="$id";   AK3_NAME="$name" ;;
-              ReSukiSU-Manager-Spoofed-arm64-v8a)  SPOOF_ID="$id"; SPOOF_NAME="$name" ;;
-              ReSukiSU-Manager-arm64-v8a)          MGR_ID="$id";   MGR_NAME="$name" ;;
+              BakaSU-Manager-Spoofed-arm64-v8a)  SPOOF_ID="$id"; SPOOF_NAME="$name" ;;
+              BakaSU-Manager-arm64-v8a)          MGR_ID="$id";   MGR_NAME="$name" ;;
             esac
           done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
                    --jq '.artifacts[] | select(.expired==false) | "\(.id)\t\(.name)"')
@@ -201,7 +200,7 @@ jobs:
             printf 'Custom kernel for **POCO X7 Pro (rodin)**, focused on performance, stability and kernel-level root integration.\n\n'
 
             printf '## ✨ Features\n\n'
-            printf -- '- **ReSukiSU** built into the kernel\n'
+            printf -- '- **BakaSU** built into the kernel\n'
             printf -- '- **SUSFS** built-in for advanced root hiding capabilities\n'
             printf -- '- **Baseband-guard (BBG)** for kernel-level protection of critical partitions\n'
             printf -- '- **Cortex-A725** compiler tuning\n'
@@ -223,8 +222,8 @@ jobs:
 
             printf '## 📦 Included Downloads\n\n'
             printf -- '- Hearthroot AnyKernel3 flashable package\n'
-            printf -- '- ReSukiSU Manager APK when available\n'
-            printf -- '- ReSukiSU Spoofed Manager APK when available\n'
+            printf -- '- BakaSU Manager APK when available\n'
+            printf -- '- BakaSU Spoofed Manager APK when available\n'
             printf '\n'
 
             printf '## 📝 Changes\n\n'

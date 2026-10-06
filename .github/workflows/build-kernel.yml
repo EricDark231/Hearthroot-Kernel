@@ -4,8 +4,8 @@ name: build-kernel
 #   clang-r596125 -> gki_defconfig -> Image + Image.lz4 (LZ4 legacy)
 #   -> AnyKernel3 可刷包（内核 blob 命名为 Image，内容为 lz4 legacy 格式，
 #      设备启动时只认名为 Image 的 blob）
-#   + 与内核树 drivers/kernelsu 落地版本一致的 ReSukiSU 管理器
-#     （取 ReSukiSU/ReSukiSU main 分支 Build Manager CI 产物：release + spoofed）
+#   + 与内核树 drivers/kernelsu 落地版本一致的 BakaSU 管理器
+#     （取 Baka-SU/BakaSU main 分支 Build Manager CI 产物：release + spoofed）
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ env:
   # clang-r596125 预编译目录所在的 googlesource 分支（注意不是
   # mirror-goog-llvm-r596125-release，那是 LLVM 源码镜像，没有预编译产物）
   CLANG_BRANCH: mirror-goog-main-llvm-toolchain-source
-  RSU_REPO: ReSukiSU/ReSukiSU
+  BAKASU_REPO: Baka-SU/BakaSU
   # 构建时主机标识：内核 banner 会显示为 EricDark231@Hearthroot
   BUILD_USER: EricDark231
   BUILD_HOST: 'Hearthroot'
@@ -156,30 +156,30 @@ jobs:
           fi
           # 不再打包外层 zip：artifact 下载下来本身就是可刷的 AK3 zip
 
-      - name: Fetch matching ReSukiSU manager APKs
+      - name: Fetch matching BakaSU manager APKs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # sync-resukisu 落地时固定在 drivers/kernelsu/Kbuild 里的 ReSukiSU commit
-          RSU_SHA=$(grep -E '^KSU_COMMIT_SHA[[:space:]]*:= *[0-9a-f]{8}[[:space:]]*$' drivers/kernelsu/Kbuild | head -n1 | awk '{print $3}')
-          echo "landed ReSukiSU commit: ${RSU_SHA:-<none>}"
+          # drivers/kernelsu/Kbuild pins the exact BakaSU commit landed in the kernel tree
+          BAKASU_SHA=$(grep -E '^KSU_COMMIT_SHA[[:space:]]*:= *[0-9a-f]{8}[[:space:]]*$' drivers/kernelsu/Kbuild | head -n1 | awk '{print $3}')
+          echo "landed BakaSU commit: ${BAKASU_SHA:-<none>}"
 
-          fetch_apks() { # $1 = ReSukiSU CI run id
-            # 两个 artifact 的产物是同名的（都是 ReSukiSU_<ver>_<code>-<abi>-release.apk），
+          fetch_apks() { # $1 = BakaSU CI run id
+            # 两个 artifact 的产物是同名的（都是 BakaSU_<ver>_<code>-<abi>-release.apk），
             # 所以必须各自解到独立目录：共用暂存目录时后解压的 spoofed 包会覆盖掉标准包，
             # 结果只剩 1 个 apk。解出的 spoofed 包再改名带 spoofed 标记，两者可共存。
             rm -rf manager manager-spoofed
             mkdir -p manager manager-spoofed
-            local tmp="$RUNNER_TEMP/rsu-apks"
+            local tmp="$RUNNER_TEMP/bakasu-apks"
             rm -rf "$tmp" && mkdir -p "$tmp"
 
             # 1) 标准包 Manager-release -> manager/
             local art_rel
-            art_rel=$(gh api "repos/$RSU_REPO/actions/runs/$1/artifacts?per_page=100" \
+            art_rel=$(gh api "repos/$BAKASU_REPO/actions/runs/$1/artifacts?per_page=100" \
                   --jq '.artifacts[] | select(.name=="Manager-release" and .expired==false) | .id' | head -n1)
             [ -n "$art_rel" ] || return 1
-            gh api "repos/$RSU_REPO/actions/artifacts/$art_rel/zip" > "$tmp/Manager-release.zip"
+            gh api "repos/$BAKASU_REPO/actions/artifacts/$art_rel/zip" > "$tmp/Manager-release.zip"
             unzip -oq "$tmp/Manager-release.zip" -d manager
             # 只保留 arm64-v8a 变体（剔除 universal / armeabi-v7a / riscv64 / x86_64）
             find manager -type f -name '*.apk' ! -name '*arm64-v8a*' -delete
@@ -187,10 +187,10 @@ jobs:
 
             # 2) spoofed 包 Spoofed-Manager-release -> manager-spoofed/
             local art_spf
-            art_spf=$(gh api "repos/$RSU_REPO/actions/runs/$1/artifacts?per_page=100" \
+            art_spf=$(gh api "repos/$BAKASU_REPO/actions/runs/$1/artifacts?per_page=100" \
                   --jq '.artifacts[] | select(.name=="Spoofed-Manager-release" and .expired==false) | .id' | head -n1)
             [ -n "$art_spf" ] || return 1
-            gh api "repos/$RSU_REPO/actions/artifacts/$art_spf/zip" > "$tmp/Spoofed-Manager-release.zip"
+            gh api "repos/$BAKASU_REPO/actions/artifacts/$art_spf/zip" > "$tmp/Spoofed-Manager-release.zip"
             unzip -oq "$tmp/Spoofed-Manager-release.zip" -d manager-spoofed
             find manager-spoofed -type f -name '*.apk' ! -name '*arm64-v8a*' -delete
             test -n "$(find manager-spoofed -type f -name '*.apk')" || return 1
@@ -215,30 +215,30 @@ jobs:
             [ "$n1" -ge 1 ] && [ "$n2" -ge 1 ] || { echo "::error::expected arm64-v8a manager APKs in both manager and manager-spoofed, got ($n1, $n2)"; return 1; }
           }
 
-          # El Manager debe provenir exactamente del mismo commit de ReSukiSU
+          # El Manager debe provenir exactamente del mismo commit de BakaSU
           # integrado en el kernel. Kbuild conserva el SHA corto (8 caracteres),
           # mientras que GitHub Actions devuelve el SHA completo.
-          [ -n "${RSU_SHA:-}" ] || {
-            echo "::error::could not determine landed ReSukiSU commit from drivers/kernelsu/Kbuild"
+          [ -n "${BAKASU_SHA:-}" ] || {
+            echo "::error::could not determine landed BakaSU commit from drivers/kernelsu/Kbuild"
             exit 1
           }
 
           RUN_ID=""
-          RSU_MANAGER_SHA=""
+          BAKASU_MANAGER_SHA=""
 
           for page in 1 2 3 4 5; do
-            echo "searching ReSukiSU Build Manager runs for ${RSU_SHA} (page ${page})"
+            echo "searching BakaSU Build Manager runs for ${BAKASU_SHA} (page ${page})"
 
             while IFS=$'\t' read -r cand cand_sha; do
               [ -n "$cand" ] || continue
               [ -n "$cand_sha" ] || continue
 
               case "$cand_sha" in
-                "${RSU_SHA}"*)
+                "${BAKASU_SHA}"*)
                   echo "found matching Build Manager run ${cand} (${cand_sha})"
                   if fetch_apks "$cand"; then
                     RUN_ID="$cand"
-                    RSU_MANAGER_SHA="$cand_sha"
+                    BAKASU_MANAGER_SHA="$cand_sha"
                     break 2
                   else
                     echo "::warning::matching run ${cand} has no usable Manager artifacts"
@@ -246,36 +246,36 @@ jobs:
                   ;;
               esac
             done < <(
-              gh api "repos/$RSU_REPO/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=100&page=${page}" \
+              gh api "repos/$BAKASU_REPO/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=100&page=${page}" \
                 --jq '.workflow_runs[] | [.id, .head_sha] | @tsv'
             )
           done
 
           [ -n "$RUN_ID" ] || {
-            echo "::error::no usable ReSukiSU Build Manager artifacts found for kernel commit ${RSU_SHA}"
+            echo "::error::no usable BakaSU Build Manager artifacts found for kernel commit ${BAKASU_SHA}"
             exit 1
           }
 
-          case "$RSU_MANAGER_SHA" in
-            "${RSU_SHA}"*) ;;
+          case "$BAKASU_MANAGER_SHA" in
+            "${BAKASU_SHA}"*) ;;
             *)
-              echo "::error::ReSukiSU Manager commit ${RSU_MANAGER_SHA} does not match kernel commit ${RSU_SHA}"
+              echo "::error::BakaSU Manager commit ${BAKASU_MANAGER_SHA} does not match kernel commit ${BAKASU_SHA}"
               exit 1
               ;;
           esac
-          RSU_MANAGER_SHA_SHORT="${RSU_MANAGER_SHA:0:12}"
-          RSU_RUN_URL="https://github.com/$RSU_REPO/actions/runs/$RUN_ID"
+          BAKASU_MANAGER_SHA_SHORT="${BAKASU_MANAGER_SHA:0:12}"
+          BAKASU_RUN_URL="https://github.com/$BAKASU_REPO/actions/runs/$RUN_ID"
 
-          echo "ReSukiSU kernel commit : ${RSU_SHA:-unknown}"
-          echo "ReSukiSU Manager commit: ${RSU_MANAGER_SHA}"
-          echo "ReSukiSU Manager run   : ${RUN_ID}"
+          echo "BakaSU kernel commit : ${BAKASU_SHA:-unknown}"
+          echo "BakaSU Manager commit: ${BAKASU_MANAGER_SHA}"
+          echo "BakaSU Manager run   : ${RUN_ID}"
 
           {
-            echo "RSU_KERNEL_SHA=${RSU_SHA:-unknown}"
-            echo "RSU_MANAGER_SHA=${RSU_MANAGER_SHA}"
-            echo "RSU_MANAGER_SHA_SHORT=${RSU_MANAGER_SHA_SHORT}"
-            echo "RSU_RUN_ID=${RUN_ID}"
-            echo "RSU_RUN_URL=${RSU_RUN_URL}"
+            echo "BAKASU_KERNEL_SHA=${BAKASU_SHA:-unknown}"
+            echo "BAKASU_MANAGER_SHA=${BAKASU_MANAGER_SHA}"
+            echo "BAKASU_MANAGER_SHA_SHORT=${BAKASU_MANAGER_SHA_SHORT}"
+            echo "BAKASU_RUN_ID=${RUN_ID}"
+            echo "BAKASU_RUN_URL=${BAKASU_RUN_URL}"
           } >> "$GITHUB_ENV"
 
           ls -la manager manager-spoofed
@@ -289,17 +289,17 @@ jobs:
           path: AnyKernel3/**
           if-no-files-found: error
 
-      - name: Upload ReSukiSU manager APK (release, arm64-v8a)
+      - name: Upload BakaSU manager APK (release, arm64-v8a)
         uses: actions/upload-artifact@v4
         with:
-          name: ReSukiSU-Manager-arm64-v8a
+          name: BakaSU-Manager-arm64-v8a
           path: manager/*.apk
           if-no-files-found: error
 
-      - name: Upload ReSukiSU manager APK (spoofed, arm64-v8a)
+      - name: Upload BakaSU manager APK (spoofed, arm64-v8a)
         uses: actions/upload-artifact@v4
         with:
-          name: ReSukiSU-Manager-Spoofed-arm64-v8a
+          name: BakaSU-Manager-Spoofed-arm64-v8a
           path: manager-spoofed/*.apk
           if-no-files-found: error
 
@@ -310,7 +310,7 @@ jobs:
             echo "- kernel: \`${KERNEL_RELEASE}\` (Image.lz4 = lz4 legacy, magic 02214c18 verified)"
             echo "- build host: EricDark231@Hearthroot"
             echo "- AK3 flashable zip: artifact \`Hearthroot-rodin-${KERNEL_RELEASE}-AnyKernel3\` (downloaded zip is directly flashable, kernel blob Image = lz4 legacy)"
-            echo "- ReSukiSU kernel commit: \`${RSU_KERNEL_SHA}\`"
-            echo "- ReSukiSU Manager dev: \`${RSU_MANAGER_SHA_SHORT}\` from main ([CI run]\($RSU_RUN_URL))"
-            echo "- ReSukiSU Manager artifacts: \`ReSukiSU-Manager-arm64-v8a\` / \`ReSukiSU-Manager-Spoofed-arm64-v8a\`"
+            echo "- BakaSU kernel commit: \`${BAKASU_KERNEL_SHA}\`"
+            echo "- BakaSU Manager dev: \`${BAKASU_MANAGER_SHA_SHORT}\` from main ([CI run]\($BAKASU_RUN_URL))"
+            echo "- BakaSU Manager artifacts: \`BakaSU-Manager-arm64-v8a\` / \`BakaSU-Manager-Spoofed-arm64-v8a\`"
           } >> "$GITHUB_STEP_SUMMARY"

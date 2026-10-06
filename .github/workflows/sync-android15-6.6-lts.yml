@@ -16,9 +16,9 @@ permissions:
   contents: write
   issues: write
 
-# Serialize with sync-resukisu (both push to the same branch).
+# Serialize with sync-bakasu (both push to the same branch).
 concurrency:
-  group: kernel-bsp-rodin-v-oss-upstream
+  group: hearthroot-dev-sync
   cancel-in-progress: false
 
 env:
