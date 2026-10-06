@@ -1,7 +1,7 @@
 name: release-kernel
 
 # 手动触发：取最近一次成功的 build-kernel 构建产物，发布 release（默认 prerelease）。
-# 正文格式对齐 v1.2（内核版本 / 构建时间 / 构建工具链 / 变更）：
+# Release body format: kernel version / build time / toolchain / changes.
 #   - 内核版本 / 构建时间 / 构建工具链 从 AK3 包内 Image 的 Linux banner 中提取，
 #     提取失败时回退到 artifact 名 / 构建记录时间
 #   - 变更内容优先用手动输入的 Markdown，留空时按「上一个 tag..本次构建 commit」自动生成
