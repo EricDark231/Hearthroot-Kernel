@@ -19,11 +19,11 @@ permissions:
 
 # Serialize with sync-android15-6.6-lts (both push to the same branch).
 concurrency:
-  group: kernel-bsp-rodin-v-oss-upstream
+  group: kernel-bsp-rodin-v-upstream
   cancel-in-progress: false
 
 env:
-  KERNEL_BRANCH: bsp-rodin-v-oss-upstream
+  KERNEL_BRANCH: bsp-rodin-v-upstream
   RSU_FORK_URL: https://github.com/omajili-manbu/ReSukiSU.git
   RSU_UPSTREAM_URL: https://github.com/ReSukiSU/ReSukiSU.git
   RSU_BRANCH: main
@@ -38,7 +38,7 @@ jobs:
       - name: Checkout kernel branch
         uses: actions/checkout@v4
         with:
-          ref: bsp-rodin-v-oss-upstream
+          ref: bsp-rodin-v-upstream
           fetch-depth: 1
 
       - name: Git identity
