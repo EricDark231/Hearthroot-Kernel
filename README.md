@@ -2,8 +2,6 @@
 
 [![Kernel](https://img.shields.io/badge/kernel-6.6.x_LTS-blue)](https://kernel.org)
 [![Base](https://img.shields.io/badge/base-MiCode%20bsp--rodin--v--oss-orange)](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/bsp-rodin-v-oss)
-[![Root](https://img.shields.io/badge/Root-ReSukiSU-green)](https://github.com/ReSukiSU/ReSukiSU)
-[![SuSFS](https://img.shields.io/badge/Hiding-SuSFS-green)](https://gitlab.com/simonpunk/susfs4ksu)
 [![License](https://img.shields.io/badge/license-GPL--2.0-lightgrey)](LICENSES)
 
 [English](README.en.md) | 简体中文
@@ -11,11 +9,6 @@
 基于小米已开源的 [`bsp-rodin-v-oss`](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/bsp-rodin-v-oss) 内核源码（AOSP `android15-6.6` GKI / 联发科）构建的 rodin 设备增强内核，并持续跟进最新 **6.6 LTS**。
 
 ## 特性
-
-### Root 与隐藏
-- 内置 **ReSukiSU**，集成自 [`omajili-manbu/ReSukiSU`（`main`）](https://github.com/omajili-manbu/ReSukiSU/tree/main)
-- 内置 **SuSFS**，集成自 [`omajili-manbu/susfs4ksu`（`gki-android15-6.6-mod`）](https://github.com/omajili-manbu/susfs4ksu/tree/gki-android15-6.6-mod)
-- 具备对应用隐藏可疑 SELinux 上下文/规则的能力，绑定在 SuSFS AVC 日志欺骗开关
 
 ### 防格机
 - **Baseband-guard (BBG)** LSM：在内核层拦截对关键分区/设备节点的未授权写入（来自 [vc-teahouse/Baseband-guard](https://github.com/vc-teahouse/Baseband-guard)，白名单已针对 rodin 调整）
@@ -69,8 +62,6 @@
 ## 致谢
 
 - [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource) — rodin 官方内核源码（`bsp-rodin-v-oss`）
-- [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) / [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) / [KernelSU](https://github.com/tiann/KernelSU) — Root 方案
-- [SusFS](https://gitlab.com/simonpunk/susfs4ksu) — Root 隐藏
 - [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) — 防格机
 - [Linux-Patches](https://gitlab.com/xanmod/linux-patches) — BBRv3 补丁
 - AOSP `android15-6.6` / 上游 Linux 6.6 LTS

@@ -2,8 +2,6 @@
 
 [![Kernel](https://img.shields.io/badge/kernel-6.6.x_LTS-blue)](https://kernel.org)
 [![Base](https://img.shields.io/badge/base-MiCode%20bsp--rodin--v--oss-orange)](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/bsp-rodin-v-oss)
-[![Root](https://img.shields.io/badge/Root-ReSukiSU-green)](https://github.com/ReSukiSU/ReSukiSU)
-[![SuSFS](https://img.shields.io/badge/Hiding-SuSFS-green)](https://gitlab.com/simonpunk/susfs4ksu)
 [![License](https://img.shields.io/badge/license-GPL--2.0-lightgrey)](LICENSES)
 
 English | [简体中文](README.md)
@@ -11,11 +9,6 @@ English | [简体中文](README.md)
 An enhanced Android kernel for Xiaomi **rodin** devices, built on top of Xiaomi's released [`bsp-rodin-v-oss`](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/bsp-rodin-v-oss) kernel source (AOSP `android15-6.6` GKI / MediaTek) and kept in sync with the latest **6.6 LTS**.
 
 ## Highlights
-
-### Root & Hiding
-- **ReSukiSU** built-in, integrated from [`omajili-manbu/ReSukiSU` (`main`)](https://github.com/omajili-manbu/ReSukiSU/tree/main)
-- **SuSFS** built-in, integrated from [`omajili-manbu/susfs4ksu` (`gki-android15-6.6-mod`)](https://github.com/omajili-manbu/susfs4ksu/tree/gki-android15-6.6-mod)
-- Able to hide suspicious SELinux contexts/rules from apps, tied to the SuSFS AVC log spoofing switch
 
 ### Brick Protection
 - **Baseband-guard (BBG)** LSM: blocks unauthorized writes to critical partitions/device nodes at the kernel level ([vc-teahouse/Baseband-guard](https://github.com/vc-teahouse/Baseband-guard), allowlist adjusted for rodin)
@@ -69,8 +62,6 @@ The tuning philosophy is **balancing performance and battery life** — all gain
 ## Acknowledgements
 
 - [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource) — official rodin kernel source (`bsp-rodin-v-oss`)
-- [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) / [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) / [KernelSU](https://github.com/tiann/KernelSU) — root solution
-- [SusFS](https://gitlab.com/simonpunk/susfs4ksu) — root hiding
 - [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) — brick protection
 - [Linux-Patches](https://gitlab.com/xanmod/linux-patches) — BBRv3 patches
 - AOSP `android15-6.6` / upstream Linux 6.6 LTS
