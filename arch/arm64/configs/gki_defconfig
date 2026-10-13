@@ -799,18 +799,6 @@ CONFIG_KUNIT_EXAMPLE_TEST=m
 # CONFIG_KUNIT_DEFAULT_ENABLED is not set
 # CONFIG_RUNTIME_TESTING_MENU is not set
 
-# KernelSU + SUSFS (Deprecated)
-# CONFIG_KSU is not set
-# CONFIG_KSU_SUSFS is not set
-# CONFIG_KSU_SUSFS_SUS_PATH is not set
-# CONFIG_KSU_SUSFS_SUS_MOUNT is not set
-# CONFIG_KSU_SUSFS_SUS_KSTAT is not set
-# CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
-# CONFIG_KSU_SUSFS_ENABLE_LOG is not set
-# CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is not set
-# CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG is not set
-# CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set
-# CONFIG_KSU_SUSFS_SUS_MAP is not set
 CONFIG_BBG=y
 CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"
 CONFIG_ZSMALLOC=y
