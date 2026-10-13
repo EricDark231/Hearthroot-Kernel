@@ -5,7 +5,7 @@ name: release-kernel
 #   - 内核版本 / 构建时间 / 构建工具链 从 AK3 包内 Image 的 Linux banner 中提取，
 #     提取失败时回退到 artifact 名 / 构建记录时间
 #   - 变更内容优先用手动输入的 Markdown，留空时按「上一个 tag..本次构建 commit」自动生成
-# 产物（assets）：AnyKernel3 可刷包 + ReSukiSU manager（release / spoofed，arm64-v8a）
+# 产物（assets）：AnyKernel3 可刷包
 
 on:
   workflow_dispatch:
@@ -37,7 +37,6 @@ permissions:
 env:
   KERNEL_BRANCH: bsp-rodin-v-oss-upstream
   BUILD_WORKFLOW: build-kernel.yml
-  RSU_REPO: ReSukiSU/ReSukiSU
 
 jobs:
   release:
@@ -79,35 +78,23 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/dl"
-          AK3_ID=""; AK3_NAME=""; MGR_ID=""; MGR_NAME=""; SPOOF_ID=""; SPOOF_NAME=""
+          AK3_ID=""; AK3_NAME=""
           while IFS=$'\t' read -r id name; do
             [ -n "$id" ] || continue
             case "$name" in
               *-AnyKernel3)      AK3_ID="$id";   AK3_NAME="$name" ;;
-              *-manager-spoofed) SPOOF_ID="$id"; SPOOF_NAME="$name" ;;
-              *-manager)         MGR_ID="$id";   MGR_NAME="$name" ;;
             esac
           done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
                    --jq '.artifacts[] | select(.expired==false) | "\(.id)\t\(.name)"')
           [ -n "$AK3_ID" ] || { echo "::error::AnyKernel3 artifact not found in run ${RUN_ID}"; exit 1; }
           echo "AK3   : ${AK3_NAME} (${AK3_ID})"
-          echo "MGR   : ${MGR_NAME:-<none>} (${MGR_ID:-none})"
-          echo "SPOOF : ${SPOOF_NAME:-<none>} (${SPOOF_ID:-none})"
 
           # AK3 artifact 的 zip 本身就是可刷包，直接下载即用
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AK3_ID}/zip" > "$RUNNER_TEMP/dl/ak3.zip"
           unzip -oq "$RUNNER_TEMP/dl/ak3.zip" -d "$RUNNER_TEMP/dl/ak3"
           test -f "$RUNNER_TEMP/dl/ak3/Image" || { echo "::error::Image blob missing in AnyKernel3 artifact"; exit 1; }
 
-          # manager artifact 里是 apk，需要解包取出
-          for pair in "${MGR_ID:-}|mgr" "${SPOOF_ID:-}|spoof"; do
-            aid="${pair%%|*}"; d="${pair##*|}"
-            [ -n "$aid" ] || continue
-            mkdir -p "$RUNNER_TEMP/dl/$d"
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${aid}/zip" > "$RUNNER_TEMP/dl/$d.zip"
-            unzip -oq "$RUNNER_TEMP/dl/$d.zip" -d "$RUNNER_TEMP/dl/$d"
-          done
-          ls -la "$RUNNER_TEMP/dl/ak3" "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/dl/ak3" 2>/dev/null || true
 
           {
             echo "AK3_PATH=${RUNNER_TEMP}/dl/ak3.zip"
@@ -213,11 +200,6 @@ jobs:
           mkdir -p out
           cp "$RUNNER_TEMP/dl/ak3.zip" "out/AnyKernel3_${SHORT}.zip"
           ASSETS=("out/AnyKernel3_${SHORT}.zip")
-          while IFS= read -r apk; do
-            [ -n "$apk" ] || continue
-            cp "$apk" "out/$(basename "$apk")"
-            ASSETS+=("out/$(basename "$apk")")
-          done < <(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' 2>/dev/null | sort)
           ls -la out
 
           EXTRA=()
