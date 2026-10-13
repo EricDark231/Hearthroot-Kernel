@@ -202,4 +202,3 @@ obj-$(CONFIG_S390)		+= s390/
 
 include $(srctree)/$(KCONFIG_EXT_PREFIX)Makefile.ext
 
-obj-$(CONFIG_KSU) += kernelsu/
