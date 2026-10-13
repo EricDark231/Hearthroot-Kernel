@@ -45,9 +45,8 @@ The tuning philosophy is **balancing performance and battery life** — all gain
 
 ## Branches
 
-- [`bsp-rodin-v-oss-upstream`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-oss-upstream) — this branch, the main build branch: Xiaomi's official rodin source with additional backports and enhancements; prebuilt images are built from it
-- [`bsp-rodin-v-oss`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-oss) — pristine mirror of Xiaomi's official rodin open-source kernel
-- [`bsp-rodin-v-oss-fix`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-oss-fix) — early KSU+SUSFS integration branch (no longer updated)
+- [`bsp-rodin-v-upstream`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream) — this branch, the main build branch: Xiaomi's official rodin source with additional backports and enhancements (KernelSU and SuSFS built in); prebuilt images are built from it
+- [`bsp-rodin-v-upstream-noroot`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream-noroot) — the no-root variant of this branch: KernelSU and SuSFS removed, upstream semantics restored; builds ship the AnyKernel3 flashable zip only
 - [`bsp-rodin-c-rebase`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-rebase) — 6.18 kernel baseline port (in progress)
 - [`bsp-rodin-c-port`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-port) — running 6.6 vendor modules on the 6.18 kernel (in progress)
 - [`rodin-device-special`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/rodin-device-special) — rodin device customization files
