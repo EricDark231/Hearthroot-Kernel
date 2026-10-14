@@ -37,6 +37,8 @@ permissions:
 env:
   KERNEL_BRANCH: hearthroot-dev
   BUILD_WORKFLOW: build-kernel.yml
+  CONTROL_REPO: EricDark231/Hearthroot-Control
+  CONTROL_TAG: v1.0.0
 
 jobs:
   release:
@@ -113,6 +115,34 @@ jobs:
             echo "AK3_NAME=${AK3_NAME}"
           } >> "$GITHUB_ENV"
 
+      - name: Download Hearthroot Control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CONTROL_FILE="Hearthroot-Control-${CONTROL_TAG}.zip"
+          mkdir -p "$RUNNER_TEMP/dl/control"
+
+          gh release download "$CONTROL_TAG" \
+            --repo "$CONTROL_REPO" \
+            --pattern "$CONTROL_FILE" \
+            --dir "$RUNNER_TEMP/dl/control"
+
+          CONTROL_PATH="$RUNNER_TEMP/dl/control/$CONTROL_FILE"
+          test -s "$CONTROL_PATH" || {
+            echo "::error::Hearthroot Control ZIP missing or empty"
+            exit 1
+          }
+
+          unzip -tq "$CONTROL_PATH" >/dev/null || {
+            echo "::error::Invalid Hearthroot Control ZIP"
+            exit 1
+          }
+
+          echo "CONTROL_PATH=$CONTROL_PATH" >> "$GITHUB_ENV"
+          echo "CONTROL_FILE=$CONTROL_FILE" >> "$GITHUB_ENV"
+          echo "Hearthroot Control: $CONTROL_TAG"
+
       - name: Extract kernel banner (version / build time / toolchain)
         run: |
           set -euo pipefail
@@ -169,8 +199,8 @@ jobs:
               RANGE="HEAD"
             fi
             echo "commit range: ${RANGE} (prev tag: ${PREV_TAG:-<none>})"
-            git log -n 40 --no-merges --pretty='- %s' "$RANGE" > "$CHANGES_FILE" || true
-            [ -s "$CHANGES_FILE" ] || printf '%s\n' '- 常规内核同步与维护' > "$CHANGES_FILE"
+            git log -n 8 --no-merges --pretty='- %s' "$RANGE" > "$CHANGES_FILE" || true
+            [ -s "$CHANGES_FILE" ] || printf '%s\n' 'Kernel maintenance and upstream synchronization.' > "$CHANGES_FILE"
           fi
           echo "----- changes.md -----"
           cat "$CHANGES_FILE"
@@ -199,35 +229,30 @@ jobs:
             printf '# 🌿 Hearthroot Kernel\n\n'
             printf 'Custom kernel for **POCO X7 Pro (rodin)**, focused on performance, stability and kernel-level root integration.\n\n'
 
-            printf '## ✨ Features\n\n'
-            printf -- '- **BakaSU** kernel-level root integration with **SUSFS** support\n'
-            printf -- '- **ADIOS 3.3.0** I/O scheduler available for runtime selection\n'
-            printf -- '- Native **none** I/O scheduler policy preserved by default\n'
-            printf -- '- **Baseband-guard (BBG)** for kernel-level protection of critical partitions\n'
-            printf -- '- **Cortex-A725** compiler tuning\n'
-            printf -- '- **ThinLTO** link-time optimization\n'
-            printf -- '- **AutoFDO** profile-guided optimization\n'
-            printf -- '- **BBRv3** TCP congestion control with **fq** queueing discipline\n'
-            printf -- '- **ZSTD 1.5.7**\n'
-            printf -- '- **ZRAM** with LZ4 as the default compression algorithm\n'
-            printf -- '- Built with the Android LLVM/Clang toolchain\n'
-            printf '\n'
+            printf '## Kernel Features\n\n'
+            printf 'BakaSU + SUSFS • ADIOS 3.3.0 • Native I/O scheduler policy\n'
+            printf 'Baseband-guard (BBG) • Cortex-A725 tuning • ThinLTO + AutoFDO\n'
+            printf 'BBRv3 + fq • ZSTD 1.5.7 • ZRAM with LZ4\n\n'
 
-            printf '## 🔧 Build Information\n\n'
-            printf -- '- **Kernel:** `%s`\n' "$KREL"
-            printf -- '- **Build date:** `%s`\n' "$BLDTIME"
-            printf -- '- **Toolchain:** `%s`\n' "$TOOLCHAIN"
-            printf -- '- **Device:** POCO X7 Pro (`rodin`)\n'
-            printf -- '- **Tested on:** Android 16/Android 17/AOSP\n'
-            printf '\n'
+            printf '## Hearthroot Control\n\n'
+            printf 'Performance profiles • CPU and I/O tuning • Xiaomi Parts integration\n'
+            printf 'Integrated Companion • Seasonal themes • Optional installation\n\n'
+            printf '**Included version:** `%s`\n\n' "$CONTROL_TAG"
 
-            printf '## 📦 Included Downloads\n\n'
-            printf -- '- Hearthroot AnyKernel3 flashable package\n'
-            printf -- '- BakaSU Manager APK when available\n'
-            printf -- '- BakaSU Spoofed Manager APK when available\n'
-            printf '\n'
+            printf '## Build Information\n\n'
+            printf '**Kernel:** `%s` • **Device:** POCO X7 Pro (`rodin`)\n' "$KREL"
+            printf '**Build date:** `%s`\n' "$BLDTIME"
+            printf '**Toolchain:** `%s`\n\n' "$TOOLCHAIN"
 
-            printf '## 📝 Changes\n\n'
+            printf '## Compatibility & Installation\n\n'
+            printf '**Recovery:** OrangeFox recommended. Other AOSP recoveries are not fully validated.\n\n'
+            printf '**Xiaomi Parts:** Tested only with the implementation from the **TeamMEX_XDA device tree**. Compatibility with the **IDO device tree** implementation remains unverified.\n\n'
+            printf '**Installation:** Flash the kernel ZIP using a compatible recovery. Install Hearthroot Control separately through your root manager. Companion is bundled with Control and can be installed using Volume UP during module setup. Xiaomi Parts integration requires LSPosed configuration.\n\n'
+
+            printf '## Downloads\n\n'
+            printf 'Kernel ZIP • Hearthroot Control ZIP • BakaSU Manager • BakaSU Spoofed Manager\n\n'
+
+            printf '## Changes\n\n'
             cat "$RUNNER_TEMP/changes.md"
           } > "$NOTES"
           echo "----- release notes -----"
@@ -240,6 +265,8 @@ jobs:
           mkdir -p out
           cp "$RUNNER_TEMP/dl/ak3.zip" "out/Hearthroot-rodin-${SHORT}.zip"
           ASSETS=("out/Hearthroot-rodin-${SHORT}.zip")
+          cp "$CONTROL_PATH" "out/$CONTROL_FILE"
+          ASSETS+=("out/$CONTROL_FILE")
           while IFS= read -r apk; do
             [ -n "$apk" ] || continue
             cp "$apk" "out/$(basename "$apk")"
