@@ -91,6 +91,8 @@ jobs:
           done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
                    --jq '.artifacts[] | select(.expired==false) | "\(.id)\t\(.name)"')
           [ -n "$AK3_ID" ] || { echo "::error::AnyKernel3 artifact not found in run ${RUN_ID}"; exit 1; }
+          [ -n "$MGR_ID" ] || { echo "::error::BakaSU Manager artifact missing"; exit 1; }
+          [ -n "$SPOOF_ID" ] || { echo "::error::BakaSU Spoofed Manager artifact missing"; exit 1; }
           echo "AK3   : ${AK3_NAME} (${AK3_ID})"
           echo "MGR   : ${MGR_NAME:-<none>} (${MGR_ID:-none})"
           echo "SPOOF : ${SPOOF_NAME:-<none>} (${SPOOF_ID:-none})"
@@ -114,6 +116,73 @@ jobs:
             echo "AK3_PATH=${RUNNER_TEMP}/dl/ak3.zip"
             echo "AK3_NAME=${AK3_NAME}"
           } >> "$GITHUB_ENV"
+
+      - name: Download Hearthroot No Root
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          NOROOT_RUN=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-noroot.yml/runs?branch=hearthroot-noroot&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
+
+          [ -n "$NOROOT_RUN" ] || {
+            echo "::error::No successful No Root build found"
+            exit 1
+          }
+
+          NOROOT_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN}" \
+            --jq '.head_sha')
+
+          NOROOT_ARTIFACT=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN}/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired==false and (.name | startswith("Hearthroot-NoRoot-"))) | .id' | head -n1)
+
+          [ -n "$NOROOT_ARTIFACT" ] || {
+            echo "::error::No Root artifact missing"
+            exit 1
+          }
+
+          mkdir -p "$RUNNER_TEMP/dl/noroot"
+
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${NOROOT_ARTIFACT}/zip" \
+            > "$RUNNER_TEMP/dl/noroot-artifact.zip"
+
+          unzip -oq "$RUNNER_TEMP/dl/noroot-artifact.zip" \
+            -d "$RUNNER_TEMP/dl/noroot"
+
+          NOROOT_ZIP=$(find "$RUNNER_TEMP/dl/noroot" \
+            -type f -name 'Hearthroot-NoRoot-*.zip' -print -quit)
+
+          [ -n "$NOROOT_ZIP" ] || {
+            echo "::error::Flashable No Root ZIP missing"
+            exit 1
+          }
+
+          unzip -tq "$NOROOT_ZIP" >/dev/null
+
+          for file in anykernel.sh tools/ak3-core.sh Image; do
+            unzip -Z -1 "$NOROOT_ZIP" | grep -Fxq "$file" || {
+              echo "::error::Missing No Root installer file: $file"
+              exit 1
+            }
+          done
+
+          NOROOT_VERSION=$(basename "$NOROOT_ZIP" .zip)
+          NOROOT_VERSION="${NOROOT_VERSION#Hearthroot-NoRoot-}"
+          NOROOT_SHORT="${NOROOT_VERSION%%-*}"
+
+          {
+            echo "NOROOT_PATH=$NOROOT_ZIP"
+            echo "NOROOT_SHORT=$NOROOT_SHORT"
+            echo "NOROOT_SHA=$NOROOT_SHA"
+          } >> "$GITHUB_ENV"
+
+          echo "No Root: $NOROOT_VERSION"
+          echo "Build: $NOROOT_RUN ($NOROOT_SHA)"
 
       - name: Download Hearthroot Control
         env:
@@ -226,33 +295,113 @@ jobs:
           fi
           NOTES="$RUNNER_TEMP/notes.md"
           {
-            printf '# 🌿 Hearthroot Kernel\n\n'
-            printf 'Custom kernel for **POCO X7 Pro (rodin)**, focused on performance, stability and kernel-level root integration.\n\n'
+            cat <<'HEADER'
+            # 🌿 Hearthroot Kernel
 
-            printf '## Kernel Features\n\n'
-            printf 'BakaSU + SUSFS • ADIOS 3.3.0 • Native I/O scheduler policy\n'
-            printf 'Baseband-guard (BBG) • Cortex-A725 tuning • ThinLTO + AutoFDO\n'
-            printf 'BBRv3 + fq • ZSTD 1.5.7 • ZRAM with LZ4\n\n'
+            **Custom Android kernel for POCO X7 Pro (rodin)**
 
-            printf '## Hearthroot Control\n\n'
-            printf 'Performance profiles • CPU and I/O tuning • Xiaomi Parts integration\n'
-            printf 'Integrated Companion • Seasonal themes • Optional installation\n\n'
+            Hearthroot focuses on performance, stability, efficiency and customization,
+            while preserving compatibility with the device's native hardware behavior.
+
+            This release includes two kernel variants: **Root** and **No Root**,
+            alongside Hearthroot Control and the BakaSU managers.
+
+            ## 🌱 Kernel Variants
+
+            ### 1. Hearthroot Root
+
+            The complete Hearthroot experience, featuring integrated root support
+            and advanced kernel modifications.
+
+            **Features:**
+            - BakaSU with SUSFS integration
+            - ADIOS 3.3.0 I/O scheduler
+            - CPU and performance optimizations
+            - BBRv3 + fq networking
+            - ZSTD 1.5.7 and ZRAM with LZ4
+            - Cortex-A725 tuning
+            - ThinLTO + AutoFDO
+            - Baseband Guard (BBG)
+
+            ### 2. Hearthroot No Root
+
+            A streamlined variant for users who prefer a kernel without
+            integrated root support.
+
+            **Features:**
+            - No integrated BakaSU or SUSFS
+            - Kyber as the preferred I/O scheduler
+            - mq-deadline and BFQ available
+            - Hearthroot build identity
+            - Flashable AnyKernel3 installer
+
+            **Note:** No Root refers to the kernel configuration.
+            It does not necessarily prevent using a separate root implementation.
+
+            ## 🍃 Hearthroot Control
+
+            The companion management module for Hearthroot.
+
+            **Features:**
+            - Performance and battery profiles
+            - CPU governor and I/O scheduler controls
+            - Xiaomi Parts integration
+            - Integrated Hearthroot Companion
+            - Seasonal themes and customizable interface
+
+          HEADER
+
             printf '**Included version:** `%s`\n\n' "$CONTROL_TAG"
 
-            printf '## Build Information\n\n'
-            printf '**Kernel:** `%s` • **Device:** POCO X7 Pro (`rodin`)\n' "$KREL"
-            printf '**Build date:** `%s`\n' "$BLDTIME"
+            printf '## 🔧 Build Information\n\n'
+            printf '| Component | Version |\n'
+            printf '|---|---|\n'
+            printf '| Hearthroot Root | `%s` |\n' "$KREL"
+            printf '| Hearthroot No Root | `%s` |\n' "$NOROOT_SHORT"
+            printf '| Device | POCO X7 Pro (`rodin`) |\n\n'
+
+            printf '**Root build date:** `%s`\n\n' "$BLDTIME"
             printf '**Toolchain:** `%s`\n\n' "$TOOLCHAIN"
 
-            printf '## Compatibility & Installation\n\n'
-            printf '**Recovery:** OrangeFox recommended. Other AOSP recoveries are not fully validated.\n\n'
-            printf '**Xiaomi Parts:** Tested only with the implementation from the **TeamMEX_XDA device tree**. Compatibility with the **IDO device tree** implementation remains unverified.\n\n'
-            printf '**Installation:** Flash the kernel ZIP using a compatible recovery. Install Hearthroot Control separately through your root manager. Companion is bundled with Control and can be installed using Volume UP during module setup. Xiaomi Parts integration requires LSPosed configuration.\n\n'
+            printf '## 📦 Downloads\n\n'
 
-            printf '## Downloads\n\n'
-            printf 'Kernel ZIP • Hearthroot Control ZIP • BakaSU Manager • BakaSU Spoofed Manager\n\n'
+            printf '1. **Hearthroot Root:** `Hearthroot-Root-%s.zip`\n' "$SHORT"
+            printf '2. **Hearthroot No Root:** `Hearthroot-NoRoot-%s.zip`\n' "$NOROOT_SHORT"
+            printf '3. **Hearthroot Control:** `%s`\n' "$CONTROL_FILE"
+            printf '4. **BakaSU Manager:** standard APK\n'
+            printf '5. **BakaSU Spoofed Manager:** alternative APK\n\n'
 
-            printf '## Changes\n\n'
+            cat <<'FOOTER'
+            ## 🔧 Compatibility & Installation
+
+            **Device:** POCO X7 Pro (`rodin`)
+
+            **Recovery:** OrangeFox recommended. Other AOSP recoveries
+            have not been fully validated.
+
+            **Installation:** Flash only one kernel variant using a
+            compatible recovery. Do not install Root and No Root together.
+
+            Hearthroot Control is installed separately through a compatible
+            root manager. Its Companion APK can be installed using Volume UP
+            during module installation.
+
+            **Xiaomi Parts:** Integration has been tested with the TeamMEX_XDA
+            device-tree implementation. Compatibility with the IDO implementation
+            remains unverified.
+
+            ## ⚠️ Important Notes
+
+            - Root and No Root are alternative kernel builds, not installation stages.
+            - BakaSU Manager is intended for configurations using BakaSU.
+            - Some Hearthroot Control features require root access.
+            - Functionality may vary depending on the ROM and root configuration.
+            - Back up important data before flashing.
+
+            ## 📝 Changelog
+
+          FOOTER
+
             cat "$RUNNER_TEMP/changes.md"
           } > "$NOTES"
           echo "----- release notes -----"
@@ -263,8 +412,16 @@ jobs:
           fi
 
           mkdir -p out
-          cp "$RUNNER_TEMP/dl/ak3.zip" "out/Hearthroot-rodin-${SHORT}.zip"
-          ASSETS=("out/Hearthroot-rodin-${SHORT}.zip")
+          (
+            cd "$RUNNER_TEMP/dl/ak3"
+            zip -qr "$GITHUB_WORKSPACE/out/Hearthroot-Root-${SHORT}.zip" .
+          )
+          cp "$NOROOT_PATH" "out/Hearthroot-NoRoot-${NOROOT_SHORT}.zip"
+
+          ASSETS=(
+            "out/Hearthroot-Root-${SHORT}.zip"
+            "out/Hearthroot-NoRoot-${NOROOT_SHORT}.zip"
+          )
           cp "$CONTROL_PATH" "out/$CONTROL_FILE"
           ASSETS+=("out/$CONTROL_FILE")
           while IFS= read -r apk; do
@@ -273,6 +430,35 @@ jobs:
             ASSETS+=("out/$(basename "$apk")")
           done < <(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' 2>/dev/null | sort)
           ls -la out
+
+          # Validate the complete release before publishing.
+          [ "${#ASSETS[@]}" -eq 5 ] || {
+            echo "::error::Expected exactly five release assets, found ${#ASSETS[@]}"
+            exit 1
+          }
+
+          for asset in "${ASSETS[@]}"; do
+            [ -s "$asset" ] || {
+              echo "::error::Missing or empty release asset: $asset"
+              exit 1
+            }
+          done
+
+          for kernel_zip in "out/Hearthroot-Root-${SHORT}.zip" "out/Hearthroot-NoRoot-${NOROOT_SHORT}.zip"; do
+            unzip -tq "$kernel_zip" >/dev/null || {
+              echo "::error::Invalid kernel ZIP: $kernel_zip"
+              exit 1
+            }
+
+            for required in anykernel.sh Image tools/ak3-core.sh; do
+              if ! unzip -Z -1 "$kernel_zip" | grep -Fxq "$required"; then
+                echo "::error::Missing $required in $kernel_zip"
+                exit 1
+              fi
+            done
+          done
+
+          echo "All five release assets validated."
 
           EXTRA=()
           if [ "${IN_PRERELEASE}" != "false" ]; then
