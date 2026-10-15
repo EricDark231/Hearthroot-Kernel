@@ -7,6 +7,9 @@ name: Hearthroot No Root Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - hearthroot-noroot
 
 permissions:
   contents: read
