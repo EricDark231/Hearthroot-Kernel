@@ -45,15 +45,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flex bison bc libelf-dev libssl-dev dwarves lz4 zip unzip
 
-      - name: Set build host name (EricDark231@Hearthroot-NoRoot)
+      - name: Configure Hearthroot build identity
         run: |
           set -euo pipefail
-          # hostname 本身不允许 '@'，所以 runner 主机名用等价的合法写法，
-          # 并额外用 KBUILD_BUILD_USER/HOST 让内核 banner 精确显示 EricDark231@Hearthroot-NoRoot
-          sudo hostname 'EricDark231@Hearthroot-NoRoot' 2>/dev/null \
-            || sudo hostnamectl set-hostname 'Kbuild-114514' 2>/dev/null \
-            || true
-          echo "runner hostname now: $(hostname)"
           {
             echo "KBUILD_BUILD_USER=${BUILD_USER}"
             echo "KBUILD_BUILD_HOST=${BUILD_HOST}"
@@ -103,6 +97,19 @@ jobs:
           set -euo pipefail
           # BUILD-GUIDE.md：只能用 gki_defconfig 生成用于编译的 .config
           make ARCH=arm64 LLVM=1 gki_defconfig
+
+          echo "Validating Hearthroot No Root configuration..."
+
+          grep -qx 'CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y' .config
+          grep -qx 'CONFIG_MQ_IOSCHED_KYBER=y' .config
+          grep -qx 'CONFIG_MQ_IOSCHED_DEADLINE=y' .config
+
+          if grep -Eq '^CONFIG_MQ_IOSCHED_ADIOS=y' .config; then
+            echo "::error::ADIOS must not be enabled in No Root"
+            exit 1
+          fi
+
+          echo "Configuration validated."
           JOBS="$(nproc)"
           echo "building with ${JOBS} jobs"
           make ARCH=arm64 LLVM=1 -j"$JOBS" Image Image.lz4
@@ -117,27 +124,47 @@ jobs:
           KERNEL_RELEASE=$(cat include/config/kernel.release)
           echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
 
-      - name: Prepare AnyKernel3 flashable tree
+      - name: Prepare Hearthroot No Root installer
         run: |
           set -euo pipefail
+
           git clone --depth=1 -b gki-2.0 https://github.com/WildKernels/AnyKernel3.git
           rm -rf AnyKernel3/.git
-          # 设备启动只认名为 Image 的 blob；内容为 lz4 legacy 压缩的内核
+
+          cp .github/anykernel/anykernel.sh AnyKernel3/anykernel.sh
           cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
-          sed -i "s|^kernel.string=.*|kernel.string=Hearthroot No Root ${KERNEL_RELEASE}|" AnyKernel3/anykernel.sh
-          # 不再打包外层 zip：artifact 下载下来本身就是可刷的 AK3 zip
 
+          test -f AnyKernel3/anykernel.sh
+          test -f AnyKernel3/tools/ak3-core.sh
+          test -f AnyKernel3/Image
 
-      - name: Upload AnyKernel3 flashable zip
+          sh -n AnyKernel3/anykernel.sh
+
+          mkdir -p out
+          (
+            cd AnyKernel3
+            zip -qr ../out/Hearthroot-NoRoot-${KERNEL_RELEASE}.zip .
+          )
+
+          ZIP="out/Hearthroot-NoRoot-${KERNEL_RELEASE}.zip"
+
+          unzip -t "$ZIP" >/dev/null
+
+          for file in anykernel.sh tools/ak3-core.sh Image; do
+            unzip -Z -1 "$ZIP" | grep -Fxq "$file" || {
+              echo "::error::Missing installer file: $file"
+              exit 1
+            }
+          done
+
+          echo "Hearthroot No Root ZIP structure validated."
+
+      - name: Upload Hearthroot No Root installer
         uses: actions/upload-artifact@v4
         with:
-          # artifact 根目录即 AK3 包内容（anykernel.sh / Image / META-INF/...），
-          # 下载得到的 zip 无需再解包即可刷入
-          name: Hearthroot-NoRoot-${{ env.KERNEL_RELEASE }}-AnyKernel3
-          path: AnyKernel3/**
+          name: Hearthroot-NoRoot-${{ env.KERNEL_RELEASE }}
+          path: out/Hearthroot-NoRoot-${{ env.KERNEL_RELEASE }}.zip
           if-no-files-found: error
-
-
 
       - name: Build summary
         run: |
@@ -145,5 +172,5 @@ jobs:
             echo "### Hearthroot No Root kernel build"
             echo "- kernel: \`${KERNEL_RELEASE}\` (Image.lz4 = lz4 legacy, magic 02214c18 verified)"
             echo "- build host: EricDark231@Hearthroot-NoRoot"
-            echo "- AK3 flashable zip: artifact \`Hearthroot-NoRoot-${KERNEL_RELEASE}-AnyKernel3\` (downloaded zip is directly flashable, kernel blob Image = lz4 legacy)"
+            echo "- Installer artifact: \`Hearthroot-NoRoot-${KERNEL_RELEASE}\` (download the artifact and extract the flashable ZIP)"
           } >> "$GITHUB_STEP_SUMMARY"
