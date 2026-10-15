@@ -1,6 +1,6 @@
 name: sync-android15-6.6-lts
 
-# Merge AOSP android15-6.6-lts into bsp-rodin-v-oss-upstream.
+# Merge AOSP android15-6.6-lts into bsp-rodin-v-upstream-noroot.
 # Rules (per owner):
 #   - clean merge   -> push the merge commit directly to the branch
 #   - any conflict  -> abort the merge, push nothing, open/update a tracking issue
@@ -17,11 +17,11 @@ permissions:
   issues: write
 
 concurrency:
-  group: kernel-bsp-rodin-v-oss-upstream
+  group: kernel-bsp-rodin-v-upstream-noroot
   cancel-in-progress: false
 
 env:
-  KERNEL_BRANCH: bsp-rodin-v-oss-upstream
+  KERNEL_BRANCH: bsp-rodin-v-upstream-noroot
   AOSP_REPO: https://android.googlesource.com/kernel/common
   LTS_BRANCH: android15-6.6-lts
   ISSUE_TITLE: "[auto-sync] android15-6.6-lts merge conflict - manual resolution needed"
@@ -33,7 +33,7 @@ jobs:
       - name: Checkout kernel branch (full history)
         uses: actions/checkout@v4
         with:
-          ref: bsp-rodin-v-oss-upstream
+          ref: bsp-rodin-v-upstream-noroot
           fetch-depth: 0
 
       - name: Git identity
