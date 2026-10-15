@@ -412,7 +412,10 @@ jobs:
           fi
 
           mkdir -p out
-          cp "$RUNNER_TEMP/dl/ak3.zip" "out/Hearthroot-Root-${SHORT}.zip"
+          (
+            cd "$RUNNER_TEMP/dl/ak3"
+            zip -qr "$GITHUB_WORKSPACE/out/Hearthroot-Root-${SHORT}.zip" .
+          )
           cp "$NOROOT_PATH" "out/Hearthroot-NoRoot-${NOROOT_SHORT}.zip"
 
           ASSETS=(
