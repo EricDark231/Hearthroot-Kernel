@@ -564,17 +564,24 @@ static inline bool elv_support_iosched(struct request_queue *q)
 }
 
 /*
- * For single queue devices, default to using mq-deadline. If we have multiple
- * queues or mq-deadline is not available, default to "none".
+ * Hearthroot No Root: prefer Kyber for eligible block queues.
+ * Preserve the existing conditions that select "none".
+ * Fall back to mq-deadline if Kyber is unavailable.
  */
 static struct elevator_type *elevator_get_default(struct request_queue *q)
 {
+	struct elevator_type *e;
+
 	if (q->tag_set->flags & BLK_MQ_F_NO_SCHED_BY_DEFAULT)
 		return NULL;
 
 	if (q->nr_hw_queues != 1 &&
 	    !blk_mq_is_shared_tags(q->tag_set->flags))
 		return NULL;
+
+	e = elevator_find_get(q, "kyber");
+	if (e)
+		return e;
 
 	return elevator_find_get(q, "mq-deadline");
 }
