@@ -142,6 +142,25 @@ jobs:
           set -euo pipefail
           git clone --depth=1 -b gki-2.0 https://github.com/WildKernels/AnyKernel3.git
           rm -rf AnyKernel3/.git
+          # AOSP Recovery compatibility:
+          # Some recoveries deny symbolic links in /tmp.
+          # BusyBox hard links were validated on rodin.
+          python3 - <<'AK3PATCH'
+          from pathlib import Path
+
+          path = Path("AnyKernel3/META-INF/com/google/android/update-binary")
+          text = path.read_text()
+
+          old = "$bb --install -s bin;"
+          new = "$bb --install bin;"
+
+          if text.count(old) != 1:
+              raise SystemExit("Unexpected AnyKernel3 BusyBox installer")
+
+          path.write_text(text.replace(old, new, 1))
+          print("AnyKernel3 BusyBox hardlink patch applied")
+          AK3PATCH
+
           # Device expects the kernel blob to be named Image; its contents use legacy LZ4 compression
           cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
 

@@ -6,7 +6,7 @@
 
 ### AnyKernel setup
 properties() { '
-kernel.string=Hearthroot @KERNEL_RELEASE@ for rodin (ReSukiSU)
+kernel.string=Hearthroot @KERNEL_RELEASE@ for rodin (BakaSU)
 do.devicecheck=1
 do.modules=0
 do.systemless=0
@@ -56,28 +56,12 @@ ui_print " "
 ui_print " Kernel : Hearthroot"
 ui_print " Device : POCO X7 Pro (rodin)"
 ui_print " Dev    : EricDark231"
-ui_print " Root   : ReSukiSU"
+ui_print " Root   : BakaSU"
 ui_print " "
 ui_print "  Adaptive by nature. Rooted in balance."
 ui_print " "
 ui_print "========================================"
 ui_print " "
-
-### GKI compatibility check
-kernel_version=$(cat /proc/version | awk -F '-' '{print $1}' | awk '{print $3}')
-
-case "$kernel_version" in
-    5.10*|5.15*|6.1*|6.6*|6.12*)
-        ksu_supported=true
-        ;;
-    *)
-        ksu_supported=false
-        ;;
-esac
-
-ui_print "[+] Current kernel: $kernel_version"
-
-$ksu_supported || abort "[!] Unsupported non-GKI kernel."
 
 ui_print "[+] Device verified: rodin"
 ui_print "[+] Preparing boot image..."
