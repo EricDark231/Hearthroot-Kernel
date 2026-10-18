@@ -4,8 +4,8 @@ name: build-kernel
 #   clang-r596125 -> gki_defconfig -> Image + Image.lz4 (LZ4 legacy)
 #   -> AnyKernel3 可刷包（内核 blob 命名为 Image，内容为 lz4 legacy 格式，
 #      设备启动时只认名为 Image 的 blob）
-#   + 与内核树 drivers/kernelsu 落地版本一致的 ReSukiSU 管理器
-#     （取 ReSukiSU/ReSukiSU main 分支 Build Manager CI 产物：release + spoofed）
+#   + 与 drivers/kernelsu/.sukisu_tag 锚定的 SukiSU-Ultra release 配套管理器
+#     （直接取该 release 的资产 APK，资产名里的 count 与 Kbuild 钉版交叉核对）
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ env:
   # clang-r596125 预编译目录所在的 googlesource 分支（注意不是
   # mirror-goog-llvm-r596125-release，那是 LLVM 源码镜像，没有预编译产物）
   CLANG_BRANCH: mirror-goog-main-llvm-toolchain-source
-  RSU_REPO: ReSukiSU/ReSukiSU
+  SUKISU_REPO: SukiSU-Ultra/SukiSU-Ultra
   # 构建时主机标识：内核 banner 会显示为 Kbuild@114514
   BUILD_USER: Kbuild
   BUILD_HOST: '114514'
@@ -127,86 +127,38 @@ jobs:
           rm -rf AnyKernel3/.git
           # 设备启动只认名为 Image 的 blob；内容为 lz4 legacy 压缩的内核
           cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
-          sed -i "s|^kernel.string=.*|kernel.string=Rodin ${KERNEL_RELEASE} (ReSukiSU)|" AnyKernel3/anykernel.sh
+          sed -i "s|^kernel.string=.*|kernel.string=Rodin ${KERNEL_RELEASE} (SukiSU-Ultra)|" AnyKernel3/anykernel.sh
           # 不再打包外层 zip：artifact 下载下来本身就是可刷的 AK3 zip
 
-      - name: Fetch matching ReSukiSU manager APKs
+      - name: Fetch SukiSU-Ultra manager APK for the anchored release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # sync-resukisu 落地时固定在 drivers/kernelsu/Kbuild 里的 ReSukiSU commit
-          RSU_SHA=$(grep -E '^KSU_COMMIT_SHA[[:space:]]*:= *[0-9a-f]{8}[[:space:]]*$' drivers/kernelsu/Kbuild | head -n1 | awk '{print $3}')
-          echo "landed ReSukiSU commit: ${RSU_SHA:-<none>}"
-
-          fetch_apks() { # $1 = ReSukiSU CI run id
-            # 两个 artifact 的产物是同名的（都是 ReSukiSU_<ver>_<code>-<abi>-release.apk），
-            # 所以必须各自解到独立目录：共用暂存目录时后解压的 spoofed 包会覆盖掉标准包，
-            # 结果只剩 1 个 apk。解出的 spoofed 包再改名带 spoofed 标记，两者可共存。
-            rm -rf manager manager-spoofed
-            mkdir -p manager manager-spoofed
-            local tmp="$RUNNER_TEMP/rsu-apks"
-            rm -rf "$tmp" && mkdir -p "$tmp"
-
-            # 1) 标准包 Manager-release -> manager/
-            local art_rel
-            art_rel=$(gh api "repos/$RSU_REPO/actions/runs/$1/artifacts?per_page=100" \
-                  --jq '.artifacts[] | select(.name=="Manager-release" and .expired==false) | .id' | head -n1)
-            [ -n "$art_rel" ] || return 1
-            gh api "repos/$RSU_REPO/actions/artifacts/$art_rel/zip" > "$tmp/Manager-release.zip"
-            unzip -oq "$tmp/Manager-release.zip" -d manager
-            # 只保留 arm64-v8a 变体（剔除 universal / armeabi-v7a / riscv64 / x86_64）
-            find manager -type f -name '*.apk' ! -name '*arm64-v8a*' -delete
-            test -n "$(find manager -type f -name '*.apk')" || return 1
-
-            # 2) spoofed 包 Spoofed-Manager-release -> manager-spoofed/
-            local art_spf
-            art_spf=$(gh api "repos/$RSU_REPO/actions/runs/$1/artifacts?per_page=100" \
-                  --jq '.artifacts[] | select(.name=="Spoofed-Manager-release" and .expired==false) | .id' | head -n1)
-            [ -n "$art_spf" ] || return 1
-            gh api "repos/$RSU_REPO/actions/artifacts/$art_spf/zip" > "$tmp/Spoofed-Manager-release.zip"
-            unzip -oq "$tmp/Spoofed-Manager-release.zip" -d manager-spoofed
-            find manager-spoofed -type f -name '*.apk' ! -name '*arm64-v8a*' -delete
-            test -n "$(find manager-spoofed -type f -name '*.apk')" || return 1
-
-            # 3) spoofed 包改名（文件名加 spoofed 标记），避免与标准包在文件层面同名
-            #    注意只判 basename：路径里的目录名 manager-spoofed 本身就含 spoofed
-            local f b
-            for f in manager-spoofed/*.apk; do
-              [ -f "$f" ] || continue
-              b=${f##*/}
-              case "$b" in
-                *spoofed*) continue ;;
-              esac
-              mv "$f" "manager-spoofed/${b%-release.apk}-spoofed-release.apk" 2>/dev/null \
-                || mv "$f" "manager-spoofed/${b%.apk}-spoofed.apk"
-            done
-
-            # 两个目录都必须有产物，缺一即换下一个候选 run
-            local n1 n2
-            n1=$(find manager -type f -name '*.apk' | wc -l)
-            n2=$(find manager-spoofed -type f -name '*.apk' | wc -l)
-            [ "$n1" -ge 1 ] && [ "$n2" -ge 1 ] || { echo "::error::expected arm64-v8a manager APKs in both manager and manager-spoofed, got ($n1, $n2)"; return 1; }
-          }
-
-          RUN_ID=""
-          if [ -n "$RSU_SHA" ]; then
-            for cand in $(gh api "repos/$RSU_REPO/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=100" \
-                          --jq ".workflow_runs[] | select(.head_sha | startswith(\"$RSU_SHA\")) | .id"); do
-              echo "trying run $cand (matches landed ReSukiSU commit)"
-              RUN_ID="$cand"; fetch_apks "$cand" && break || RUN_ID=""
-            done
+          # sync-sukisu 落地时写入的锚：drivers/kernelsu/.sukisu_tag（release tag）
+          TAG=$(cat drivers/kernelsu/.sukisu_tag 2>/dev/null || true)
+          if [ -z "$TAG" ]; then
+            echo "::warning::no .sukisu_tag anchor - falling back to latest stable release"
+            TAG=$(gh api "repos/$SUKISU_REPO/releases/latest" --jq .tag_name)
           fi
-          if [ -z "$RUN_ID" ]; then
-            echo "::warning::no artifacts for ReSukiSU commit ${RSU_SHA:-unknown} - falling back to latest successful main build"
-            for cand in $(gh api "repos/$RSU_REPO/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=10" --jq '.workflow_runs[].id'); do
-              echo "trying latest run $cand"
-              RUN_ID="$cand"; fetch_apks "$cand" && break || RUN_ID=""
-            done
+          REL=$(gh api "repos/$SUKISU_REPO/releases/tags/$TAG")
+          [ "$(echo "$REL" | jq -r .prerelease)" = "false" ] || { echo "::error::$TAG is a prerelease"; exit 1; }
+          ASSET_NAME=$(echo "$REL" | jq -r '.assets[].name' | grep '^SukiSU_.*\.apk$' | head -n1)
+          ASSET_URL=$(echo "$REL" | jq -r --arg n "$ASSET_NAME" '.assets[] | select(.name==$n) | .browser_download_url')
+          [ -n "$ASSET_NAME" ] && [ -n "$ASSET_URL" ] || { echo "::error::no manager APK asset on release $TAG"; exit 1; }
+          # 管理器与落地模块交叉核对：release 资产名里的 count 必须等于 Kbuild 钉的 count
+          REL_COUNT=$(echo "$ASSET_NAME" | sed -n 's/^SukiSU_v[0-9.]*_\([0-9]*\).*\.apk$/\1/p')
+          PINNED=$(grep -E '^git_commit_count = [0-9]+$' drivers/kernelsu/Kbuild | awk '{print $3}')
+          if [ -n "$REL_COUNT" ] && [ -n "$PINNED" ] && [ "$REL_COUNT" != "$PINNED" ]; then
+            echo "::error::release $TAG count $REL_COUNT != pinned Kbuild count $PINNED - module/manager pairing mismatch"
+            exit 1
           fi
-          [ -n "$RUN_ID" ] || { echo "::error::no usable ReSukiSU Build Manager artifacts found"; exit 1; }
-          echo "RSU_RUN_URL=https://github.com/$RSU_REPO/actions/runs/$RUN_ID" >> "$GITHUB_ENV"
-          ls -la manager manager-spoofed
+          rm -rf manager && mkdir -p manager
+          curl -fL --retry 3 --connect-timeout 30 "$ASSET_URL" -o "manager/$ASSET_NAME"
+          [ "$(stat -c%s "manager/$ASSET_NAME")" -gt 1000000 ] || { echo "::error::manager APK looks too small"; exit 1; }
+          echo "SUKISU_RELEASE_URL=https://github.com/$SUKISU_REPO/releases/tag/$TAG" >> "$GITHUB_ENV"
+          echo "manager APK: $ASSET_NAME (release $TAG)"
+          ls -la manager
 
       - name: Upload AnyKernel3 flashable zip
         uses: actions/upload-artifact@v4
@@ -217,18 +169,11 @@ jobs:
           path: AnyKernel3/**
           if-no-files-found: error
 
-      - name: Upload ReSukiSU manager APK (release, arm64-v8a)
+      - name: Upload SukiSU-Ultra manager APK (release asset)
         uses: actions/upload-artifact@v4
         with:
           name: rodin-${{ env.KERNEL_RELEASE }}-manager
           path: manager/*.apk
-          if-no-files-found: error
-
-      - name: Upload ReSukiSU manager APK (spoofed, arm64-v8a)
-        uses: actions/upload-artifact@v4
-        with:
-          name: rodin-${{ env.KERNEL_RELEASE }}-manager-spoofed
-          path: manager-spoofed/*.apk
           if-no-files-found: error
 
       - name: Build summary
@@ -238,5 +183,5 @@ jobs:
             echo "- kernel: \`${KERNEL_RELEASE}\` (Image.lz4 = lz4 legacy, magic 02214c18 verified)"
             echo "- build host: Kbuild@114514"
             echo "- AK3 flashable zip: artifact \`Rodin-${KERNEL_RELEASE}-AnyKernel3\` (downloaded zip is directly flashable, kernel blob Image = lz4 legacy)"
-            echo "- ReSukiSU manager (arm64-v8a only): artifacts \`rodin-${KERNEL_RELEASE}-manager\` / \`rodin-${KERNEL_RELEASE}-manager-spoofed\` from [CI run]($RSU_RUN_URL)"
+            echo "- SukiSU-Ultra manager (release asset): artifact \`rodin-${KERNEL_RELEASE}-manager\` from [release]($SUKISU_RELEASE_URL)"
           } >> "$GITHUB_STEP_SUMMARY"

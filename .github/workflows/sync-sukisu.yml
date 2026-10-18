@@ -1,0 +1,323 @@
+name: sync-sukisu
+
+# Track SukiSU-Ultra STABLE release tags only (GitHub releases/latest excludes
+# drafts and prereleases by definition) and re-land the kernel module into
+# drivers/kernelsu.
+# Rules (per owner):
+#   - anchored by release tag, never by branch HEAD: no more per-commit chasing
+#   - the SUSFS bridge (.github/patches/10_enable_susfs_for_ksu-v4.2.1.patch)
+#     must apply to the new tag, otherwise abort, push nothing, open an issue
+#   - SUSFS kernel-side files are never overwritten in-tree (bootstrap only)
+# NOTE: this workflow does NOT build-test the landed tree; build locally before
+# shipping a boot image.
+
+on:
+  schedule:
+    - cron: '50 18 * * *'   # daily 02:50 UTC+8, after sync-android15-6.6-lts
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'explicit SukiSU-Ultra release tag (e.g. v4.2.1); default = latest stable release'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+# Serialize with sync-android15-6.6-lts (both push to the same branch).
+concurrency:
+  group: kernel-bsp-rodin-v-upstream
+  cancel-in-progress: false
+
+env:
+  KERNEL_BRANCH: bsp-rodin-v-upstream
+  SUKISU_REPO: SukiSU-Ultra/SukiSU-Ultra
+  SUSFS_REPO_URL: https://github.com/omajili-manbu/susfs4ksu.git
+  SUSFS_BRANCH: gki-android15-6.6-mod
+  BRIDGE_PATCH: .github/patches/10_enable_susfs_for_ksu-v4.2.1.patch
+  ISSUE_TITLE: "[auto-sync] SukiSU-Ultra sync failed - manual attention needed"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kernel branch
+        uses: actions/checkout@v4
+        with:
+          ref: bsp-rodin-v-upstream
+          fetch-depth: 1
+
+      - name: Git identity
+        run: |
+          git config user.name  "omajili-manbu"
+          git config user.email "qwer12777332899@gmail.com"
+
+      - name: Resolve target release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG=$(gh api "repos/$SUKISU_REPO/releases/latest" --jq .tag_name)
+          fi
+          REL=$(gh api "repos/$SUKISU_REPO/releases/tags/$TAG")
+          if [ "$(echo "$REL" | jq -r .draft)" = "true" ] || [ "$(echo "$REL" | jq -r .prerelease)" = "true" ]; then
+            echo "::error::$TAG is a draft/prerelease - only stable release tags are tracked"
+            exit 1
+          fi
+          # count 取自 release 资产名（SukiSU_v<ver>_<count>-release.apk），与
+          # SukiSU CI 打进管理器的 count 同源，是模块/管理器配对的权威值
+          COUNT=$(echo "$REL" | jq -r '.assets[].name' \
+            | sed -n 's/^SukiSU_v[0-9.]*_\([0-9]*\)[^0-9]*apk$/\1/p' | head -n1)
+          ANCHOR=$(cat drivers/kernelsu/.sukisu_tag 2>/dev/null || echo "")
+          echo "target tag: $TAG (anchored: ${ANCHOR:-<none>}, release count: ${COUNT:-<unparsed>})"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$TAG" = "$ANCHOR" ]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "### Result"$'\n'"- SukiSU-Ultra \`$TAG\` already anchored - nothing to do" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clone SukiSU-Ultra at the release tag and apply SUSFS bridge
+        id: sukisu
+        if: steps.tag.outputs.up_to_date != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          git clone --depth 1 -b "$TAG" "https://github.com/$SUKISU_REPO.git" "$RUNNER_TEMP/sukisu"
+          SU_SHA=$(git -C "$RUNNER_TEMP/sukisu" rev-parse --short=8 HEAD)
+          SU_COUNT="${{ steps.tag.outputs.count }}"
+          if [ -z "$SU_COUNT" ]; then
+            echo "::warning::release asset name did not carry a count - falling back to API pagination"
+            SU_COUNT=$(curl -sI "https://api.github.com/repos/$SUKISU_REPO/commits?sha=main&per_page=1" \
+              | grep -i '^link:' | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p')
+          fi
+          [ -n "$SU_COUNT" ] || { echo "::error::cannot resolve commit count for $TAG"; exit 1; }
+          echo "sukisu_sha=$SU_SHA" >> "$GITHUB_OUTPUT"
+          echo "sukisu_count=$SU_COUNT" >> "$GITHUB_OUTPUT"
+
+          # SUSFS bridge, tri-state per owner rule: appliable -> apply;
+          # net effect present -> skip; anything else -> abort (structural
+          # surprise, push nothing, open an issue).
+          if git -C "$RUNNER_TEMP/sukisu" apply --check "$GITHUB_WORKSPACE/$BRIDGE_PATCH" 2>/tmp/bridge-err; then
+            git -C "$RUNNER_TEMP/sukisu" apply "$GITHUB_WORKSPACE/$BRIDGE_PATCH"
+            echo "bridge patch applied to $TAG"
+          elif grep -q 'menu "KernelSU - SUSFS"' "$RUNNER_TEMP/sukisu/kernel/Kconfig" \
+               && grep -qw susfs_init "$RUNNER_TEMP/sukisu/kernel/core/init.c"; then
+            echo "bridge net effect already present in tag - skipping"
+          else
+            echo "::error::bridge patch does not apply to $TAG and its markers are absent - SukiSU-Ultra module restructured, a new bridge is needed before tracking this tag"
+            cp /tmp/bridge-err "$RUNNER_TEMP/bridge-conflict.log" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Bridge closure gate: every symbol the kernel tree's susfs hooks
+          # call must exist in the bridged module BEFORE it lands.
+          MISS=0
+          for sym in ksu_handle_faccessat ksu_handle_execveat ksu_handle_execveat_sucompat \
+                     ksu_handle_stat ksu_handle_vfs_fstat ksu_handle_sys_read \
+                     ksu_handle_setresuid ksu_handle_input_handle_event \
+                     susfs_is_current_ksu_domain susfs_is_current_init_domain \
+                     ksu_sucompat_init ksu_setuid_hook_init susfs_init; do
+            grep -rqw "$sym" "$RUNNER_TEMP/sukisu/kernel" --include="*.c" --include="*.h" \
+              || { echo "::error::bridged module missing $sym"; MISS=1; }
+          done
+          grep -q "syscall_hook_manager.o" "$RUNNER_TEMP/sukisu/kernel/Kbuild" \
+            && { echo "::error::Kbuild still wires the inline hook architecture"; MISS=1; }
+          [ "$MISS" = 0 ] || { echo "::error::bridge closure gate failed on $TAG"; exit 1; }
+
+      - name: Land SukiSU-Ultra module + refresh SUSFS files
+        id: landing
+        if: steps.tag.outputs.up_to_date != 'true'
+        run: |
+          set -euo pipefail
+          SU="$RUNNER_TEMP/sukisu"
+
+          # 1) Mirror SukiSU-Ultra kernel/ into drivers/kernelsu (deletes stale
+          #    files, same landing shape as the previous ReSukiSU workflow).
+          rsync -a --delete "$SU/kernel/" drivers/kernelsu/
+
+          # 2) Rebuild the real uapi/ directory: the repo's kernel/include/uapi
+          #    symlink does not resolve once copied into the kernel tree.
+          rm -rf drivers/kernelsu/include/uapi drivers/kernelsu/uapi
+          mkdir -p drivers/kernelsu/uapi
+          cp "$SU"/uapi/*.h drivers/kernelsu/uapi/
+
+          # 3) Tag anchor for build-kernel.yml (written after rsync so the
+          #    mirror does not delete it).
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "$TAG" > drivers/kernelsu/.sukisu_tag
+
+          # 4) SUSFS kernel-side files: the tree carries a matched SUSFS v2.3.0
+          #    set (fs/susfs.c + include/linux/susfs{,_def}.h) backing the
+          #    already-applied kernel-side hooks. The susfs4ksu -mod fork's
+          #    files are OLDER than the tree's (the tree's fs/susfs.c implements
+          #    susfs_open_redirect_spoof_vfs_statfs/seq_show; overwriting with
+          #    the fork's broke the build once already) - so the fork is only a
+          #    bootstrap for a tree without SUSFS; never overwrite present files.
+          git clone --depth 1 -b "$SUSFS_BRANCH" "$SUSFS_REPO_URL" "$RUNNER_TEMP/susfs"
+          SUSFS_SHA=$(git -C "$RUNNER_TEMP/susfs" rev-parse --short=8 HEAD)
+          echo "susfs_sha=$SUSFS_SHA" >> "$GITHUB_OUTPUT"
+          KP="$RUNNER_TEMP/susfs/kernel_patches"
+          if [ ! -f fs/susfs.c ] || [ ! -f include/linux/susfs.h ] || [ ! -f include/linux/susfs_def.h ]; then
+            echo "SUSFS files missing -> bootstrap from $SUSFS_REPO_URL@$SUSFS_BRANCH"
+            cp -f "$KP/include/linux/susfs.h"     include/linux/susfs.h
+            cp -f "$KP/fs/susfs.c"                fs/susfs.c
+            cp -f "$KP/include/linux/susfs_def.h" include/linux/susfs_def.h
+            BOOTSTRAPPED=1
+          else
+            echo "SUSFS kernel-side files present -> left untouched"
+          fi
+
+          # 4b) Consistency gate: kernel-side call sites already in the tree
+          #     must be backed by fs/susfs.c. Abort (push nothing) on mismatch.
+          for sym in susfs_open_redirect_spoof_vfs_statfs susfs_open_redirect_spoof_seq_show; do
+            grep -q "$sym" fs/susfs.c || {
+              echo "::error::fs/susfs.c does not define $sym - SUSFS kernel-side/version mismatch, aborting"
+              exit 1
+            }
+          done
+
+          # Net-effect markers per owner patch: distinctive strings that only
+          # exist in the tree once the patch's changes are in. The tree evolves
+          # directly, so markers - not byte-matching - decide.
+          patch_effects_present() {
+            case "$1" in
+              55_selinux_hook_hide_susfs_artifacts.patch)
+                grep -q 'susfs_is_avc_log_spoofing_enabled' fs/proc/array.c &&
+                grep -q 'susfs_is_avc_log_spoofing_enabled' security/selinux/avc.c ;;
+              56_selinuxfs_hide_sensitive_av.patch)
+                grep -q 'susfs_is_avc_log_spoofing_enabled' security/selinux/selinuxfs.c &&
+                grep -q 'fsck_untrusted' security/selinux/selinuxfs.c ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # 5) Kernel-side SUSFS patches, tri-state (same policy as before).
+          APPLIED=0
+          PATCHES=(55_selinux_hook_hide_susfs_artifacts.patch \
+                   56_selinuxfs_hide_sensitive_av.patch)
+          if [ "${BOOTSTRAPPED:-0}" = "1" ]; then
+            PATCHES=(50_add_susfs_in_gki-android15-6.6.patch "${PATCHES[@]}")
+          fi
+          for p in "${PATCHES[@]}"; do
+            if git apply --check "$KP/$p" 2>/tmp/patch-err; then
+              echo "$p: not applied yet -> applying"
+              git apply "$KP/$p" || { echo "::error::$p failed to apply"; exit 1; }
+              APPLIED=1
+            elif patch_effects_present "$p"; then
+              echo "$p: net effect present in tree -> skipping"
+            else
+              echo "::error::$p can neither be applied nor is its net effect present - tree/patch mismatch, aborting"
+              exit 1
+            fi
+          done
+          echo "patch_applied=$APPLIED" >> "$GITHUB_OUTPUT"
+
+      - name: Pin SukiSU-Ultra version in drivers/kernelsu/Kbuild
+        if: steps.tag.outputs.up_to_date != 'true'
+        run: |
+          python3 .github/scripts/ksu_pin_version_sukisu.py \
+            --kbuild drivers/kernelsu/Kbuild \
+            --tag    "${{ steps.tag.outputs.tag }}" \
+            --count  "${{ steps.sukisu.outputs.sukisu_count }}" \
+            --sha8   "${{ steps.sukisu.outputs.sukisu_sha }}" \
+            --branch main
+
+      - name: Sanity checks
+        if: steps.tag.outputs.up_to_date != 'true'
+        run: |
+          set -euo pipefail
+          UAPI_H=$(ls drivers/kernelsu/uapi/*.h | wc -l)
+          [ "$UAPI_H" -ge 6 ] || { echo "::error::uapi/ has $UAPI_H headers, expected >= 6"; exit 1; }
+          grep -q "KERNEL_SU_VERSION" drivers/kernelsu/include/ksu.h
+          grep -qE '^KSU_GITHUB_VER   := v?[0-9.]+' drivers/kernelsu/Kbuild
+          grep -qE '^git_commit_count = [0-9]+$' drivers/kernelsu/Kbuild
+          grep -q 'menu "KernelSU - SUSFS"' drivers/kernelsu/Kconfig
+          grep -qw susfs_init drivers/kernelsu/core/init.c
+          for d in arm64 arm32 x86_64; do
+            [ -d "drivers/kernelsu/hook/$d" ] || { echo "::error::missing drivers/kernelsu/hook/$d"; exit 1; }
+          done
+          test -f fs/susfs.c && test -f include/linux/susfs.h && test -f include/linux/susfs_def.h
+          # kernel-tree -> module symbol closure (the anti-regression gate):
+          # every ksu_handle_*/susfs_is_* call compiled into the kernel must be
+          # backed by the landed module.
+          for sym in $(grep -rhoE 'ksu_handle_[a-z_0-9]*' fs/ drivers/input/input.c \
+                         --include='*.c' | sort -u) susfs_is_current_ksu_domain susfs_is_current_init_domain; do
+            grep -rqw "$sym" drivers/kernelsu --include='*.c' \
+              || { echo "::error::kernel tree calls $sym but drivers/kernelsu does not define it"; exit 1; }
+          done
+          echo "all sanity checks passed"
+
+      - name: Commit and push
+        id: commit
+        if: steps.tag.outputs.up_to_date != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          COUNT="${{ steps.sukisu.outputs.sukisu_count }}"
+          SHA="${{ steps.sukisu.outputs.sukisu_sha }}"
+          git add -A
+          TRACKED_UAPI=$(git ls-files drivers/kernelsu/uapi | wc -l)
+          [ "$TRACKED_UAPI" -ge 6 ] || { echo "::error::uapi headers not tracked (got $TRACKED_UAPI) - .gitignore may be swallowing them"; exit 1; }
+          if git diff --cached --quiet; then
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            echo "SukiSU-Ultra $TAG and SUSFS already up to date - nothing to commit"
+            exit 0
+          fi
+          {
+            echo "drivers/kernelsu: sync SukiSU-Ultra to $TAG (release tag) and pin version $COUNT"
+            echo ""
+            echo "Re-land SukiSU-Ultra kernel module from release tag $TAG ($SHA on main)."
+            echo "SUSFS bridge $BRIDGE_PATCH applied to the landed module."
+            echo "SUSFS kernel-side files preserved in-tree; patch source susfs4ksu $SUSFS_BRANCH (${{ steps.landing.outputs.susfs_sha }})."
+            [ "${{ steps.landing.outputs.patch_applied }}" = "1" ] && echo "Kernel-side SUSFS patch(es) were missing and have been re-applied." || true
+            echo ""
+            echo "Version pinned via vendored Kbuild (no git/network query):"
+            echo "  KSU_GITHUB_VER  = $TAG"
+            echo "  LOCAL_COUNT     = $COUNT"
+            echo "  sha8            = $SHA"
+          } > /tmp/commit-msg.txt
+          git commit -F /tmp/commit-msg.txt
+          git push origin "HEAD:$KERNEL_BRANCH"
+          {
+            echo "### Result"
+            echo "- SukiSU-Ultra landed: \`$TAG\` (release tag, count $COUNT, sha \`$SHA\`)"
+            echo "- SUSFS files from susfs4ksu@$SUSFS_BRANCH: \`${{ steps.landing.outputs.susfs_sha }}\`"
+            echo "- pushed to \`$KERNEL_BRANCH\`"
+            echo "- build verification was NOT run - build locally before shipping"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: File tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EXTRA=""
+          if [ -f "$RUNNER_TEMP/bridge-conflict.log" ]; then
+            EXTRA=$'### SUSFS bridge apply log\n```\n'
+            EXTRA+="$(head -100 "$RUNNER_TEMP/bridge-conflict.log")"
+            EXTRA+=$'\n```\n'
+            EXTRA+=$'The bridge patch is version-specific (filename carries the tag it was authored against).\nUpdate it in-tree for the new tag, then re-run this workflow.\n'
+          fi
+          {
+            echo "The [sync-sukisu run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) failed."
+            echo "**Nothing was pushed.** Common causes:"
+            echo "- the SUSFS bridge patch does not apply to the new SukiSU-Ultra release tag (needs a new in-tree bridge)"
+            echo "- release count could not be parsed from the release assets"
+            echo "- SUSFS kernel-side/patch mismatch (tree vs susfs4ksu@$SUSFS_BRANCH)"
+            echo ""
+            echo "$EXTRA"
+          } > /tmp/issue-body.md
+          EXISTING=$(gh issue list --state open --search "auto-sync SukiSU-Ultra failed in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already open - not duplicating."
+            exit 0
+          fi
+          gh issue create --title "$ISSUE_TITLE" --body-file /tmp/issue-body.md
