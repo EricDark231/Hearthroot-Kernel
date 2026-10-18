@@ -1,7 +1,6 @@
 #include <linux/version.h>
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 #include <linux/fs.h>
+#include <linux/nsproxy.h>
 #include <linux/sched/task.h>
 #include <linux/uaccess.h>
 #include <linux/filter.h>
@@ -64,4 +63,3 @@ void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr)
     }
 #endif
 }
-#endif

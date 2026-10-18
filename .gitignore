@@ -11,6 +11,8 @@
 # Normal rules (sorted alphabetically)
 #
 .*
+# SukiSU-Ultra release tag anchor: read by build-kernel.yml, written by sync-sukisu.yml
+!drivers/kernelsu/.sukisu_tag
 *.a
 *.asn1.[ch]
 *.bin
