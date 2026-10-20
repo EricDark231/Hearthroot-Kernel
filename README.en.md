@@ -2,7 +2,7 @@
 
 [![Kernel](https://img.shields.io/badge/kernel-6.6.x_LTS-blue)](https://kernel.org)
 [![Base](https://img.shields.io/badge/base-MiCode%20bsp--rodin--v--oss-orange)](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/bsp-rodin-v-oss)
-[![Root](https://img.shields.io/badge/Root-ReSukiSU-green)](https://github.com/ReSukiSU/ReSukiSU)
+[![Root](https://img.shields.io/badge/Root-SukiSU--Ultra-green)](https://github.com/SukiSU-Ultra/SukiSU-Ultra)
 [![SuSFS](https://img.shields.io/badge/Hiding-SuSFS-green)](https://gitlab.com/simonpunk/susfs4ksu)
 [![License](https://img.shields.io/badge/license-GPL--2.0-lightgrey)](LICENSES)
 
@@ -13,7 +13,7 @@ An enhanced Android kernel for Xiaomi **rodin** devices, built on top of Xiaomi'
 ## Highlights
 
 ### Root & Hiding
-- **ReSukiSU** built-in, integrated from [`omajili-manbu/ReSukiSU` (`main`)](https://github.com/omajili-manbu/ReSukiSU/tree/main)
+- **SukiSU-Ultra** built in (`drivers/kernelsu`), auto-tracked to upstream stable release tags by CI (see "Automation" below)
 - **SuSFS** built-in, integrated from [`omajili-manbu/susfs4ksu` (`gki-android15-6.6-mod`)](https://github.com/omajili-manbu/susfs4ksu/tree/gki-android15-6.6-mod)
 - Able to hide suspicious SELinux contexts/rules from apps, tied to the SuSFS AVC log spoofing switch
 
@@ -34,6 +34,11 @@ An enhanced Android kernel for Xiaomi **rodin** devices, built on top of Xiaomi'
 
 The tuning philosophy is **balancing performance and battery life** — all gains come from compile-time optimizations, an up-to-date kernel, updated algorithms, and bug fixes on top of Xiaomi's official kernel, with no aggressive tweaks biased toward either side.
 
+## Automation
+
+- Daily merge of the AOSP `android15-6.6-lts` upstream into the tracked BSP branches (matrix over `bsp-rodin-v-upstream` and `bsp-rodin-v-upstream-noroot`); conflicts open an issue automatically
+- Daily tracking of [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) stable release tags, auto-merged into `drivers/kernelsu`; unclean merges abort the push and open an issue
+
 ## Supported Devices
 
 | Device | Codename | OS |
@@ -45,10 +50,11 @@ The tuning philosophy is **balancing performance and battery life** — all gain
 
 ## Branches
 
-- [`bsp-rodin-v-upstream`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream) — this branch, the main build branch: Xiaomi's official rodin source with additional backports and enhancements (KernelSU and SuSFS built in); prebuilt images are built from it
-- [`bsp-rodin-v-upstream-noroot`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream-noroot) — the no-root variant of this branch: KernelSU and SuSFS removed, upstream semantics restored; builds ship the AnyKernel3 flashable zip only
-- [`bsp-rodin-c-rebase`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-rebase) — 6.18 kernel baseline port (in progress)
+- [`bsp-rodin-v-upstream`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream) — this branch, the main build branch: Xiaomi's official rodin source with additional backports and enhancements (SukiSU-Ultra and SuSFS built in); prebuilt images are built from it
+- [`bsp-rodin-v-upstream-noroot`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream-noroot) — the no-root variant of this branch: SukiSU-Ultra and SuSFS removed, upstream semantics restored; builds ship the AnyKernel3 flashable zip only
+- [`bsp-rodin-c-rebase`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-rebase) — 6.18 kernel baseline rebuild (in progress; see its own README)
 - [`bsp-rodin-c-port`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-port) — running 6.6 vendor modules on the 6.18 kernel (in progress)
+- [`c-rebase-16k`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/c-rebase-16k) — 16K page size experiment on the 6.18 tree (frozen)
 - [`rodin-device-special`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/rodin-device-special) — rodin device customization files
 - [`rodin-lz4-v1.10.0-backport`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/rodin-lz4-v1.10.0-backport) — LZ4 v1.10.0 backport
 - [`dash-w-oss`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/dash-w-oss) — REDMI Turbo 5 Max (Android W) kernel
@@ -68,8 +74,8 @@ The tuning philosophy is **balancing performance and battery life** — all gain
 ## Acknowledgements
 
 - [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource) — official rodin kernel source (`bsp-rodin-v-oss`)
-- [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) / [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) / [KernelSU](https://github.com/tiann/KernelSU) — root solution
-- [SusFS](https://gitlab.com/simonpunk/susfs4ksu) — root hiding
+- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) / [KernelSU](https://github.com/tiann/KernelSU) — root solution
+- [SuSFS](https://gitlab.com/simonpunk/susfs4ksu) — root hiding
 - [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) — brick protection
 - [Linux-Patches](https://gitlab.com/xanmod/linux-patches) — BBRv3 patches
 - AOSP `android15-6.6` / upstream Linux 6.6 LTS

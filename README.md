@@ -2,7 +2,7 @@
 
 [![Kernel](https://img.shields.io/badge/kernel-6.6.x_LTS-blue)](https://kernel.org)
 [![Base](https://img.shields.io/badge/base-MiCode%20bsp--rodin--v--oss-orange)](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/bsp-rodin-v-oss)
-[![Root](https://img.shields.io/badge/Root-ReSukiSU-green)](https://github.com/ReSukiSU/ReSukiSU)
+[![Root](https://img.shields.io/badge/Root-SukiSU--Ultra-green)](https://github.com/SukiSU-Ultra/SukiSU-Ultra)
 [![SuSFS](https://img.shields.io/badge/Hiding-SuSFS-green)](https://gitlab.com/simonpunk/susfs4ksu)
 [![License](https://img.shields.io/badge/license-GPL--2.0-lightgrey)](LICENSES)
 
@@ -13,7 +13,7 @@
 ## 特性
 
 ### Root 与隐藏
-- 内置 **ReSukiSU**，集成自 [`omajili-manbu/ReSukiSU`（`main`）](https://github.com/omajili-manbu/ReSukiSU/tree/main)
+- 内置 **SukiSU-Ultra**（`drivers/kernelsu`），由 CI 自动追踪并合并上游 stable release tag（见下方"自动化"）
 - 内置 **SuSFS**，集成自 [`omajili-manbu/susfs4ksu`（`gki-android15-6.6-mod`）](https://github.com/omajili-manbu/susfs4ksu/tree/gki-android15-6.6-mod)
 - 具备对应用隐藏可疑 SELinux 上下文/规则的能力，绑定在 SuSFS AVC 日志欺骗开关
 
@@ -34,6 +34,11 @@
 
 调优理念是**性能与续航兼顾**——所有提升均来自编译时优化、更新的内核、更新的算法，以及对小米官方内核的 bug 修复，没有偏向任何一方的激进调整。
 
+## 自动化
+
+- 每日自动合并 AOSP `android15-6.6-lts` 上游到被跟踪的 BSP 分支（矩阵覆盖 `bsp-rodin-v-upstream` 与 `bsp-rodin-v-upstream-noroot`），出现冲突时自动开 issue
+- 每日追踪 [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) 的 stable release tag 并自动合并进 `drivers/kernelsu`，无法干净合并时中止推送并开 issue
+
 ## 支持设备
 
 | 设备 | 代号 | 系统 |
@@ -45,10 +50,11 @@
 
 ## 分支
 
-- [`bsp-rodin-v-upstream`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream) — 本分支，主构建分支：在小米官方 rodin 源码基础上叠加反向移植与增强（内置 KernelSU 与 SuSFS），Releases 由此构建
-- [`bsp-rodin-v-upstream-noroot`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream-noroot) — 本分支的无 Root 变体：移除 KernelSU 与 SuSFS，恢复上游语义，构建产物仅提供 AnyKernel3 可刷包
-- [`bsp-rodin-c-rebase`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-rebase) — 6.18 内核基线移植（进行中）
+- [`bsp-rodin-v-upstream`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream) — 本分支，主构建分支：在小米官方 rodin 源码基础上叠加反向移植与增强（内置 SukiSU-Ultra 与 SuSFS），Releases 由此构建
+- [`bsp-rodin-v-upstream-noroot`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-v-upstream-noroot) — 本分支的无 Root 变体：移除 SukiSU-Ultra 与 SuSFS，恢复上游语义，构建产物仅提供 AnyKernel3 可刷包
+- [`bsp-rodin-c-rebase`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-rebase) — 6.18 内核基线重建（进行中，详见该分支 README）
 - [`bsp-rodin-c-port`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/bsp-rodin-c-port) — 在 6.18 内核上兼容 6.6 vendor 模块的移植分支（进行中）
+- [`c-rebase-16k`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/c-rebase-16k) — 6.18 树的 16K 页尺寸实验分支（已冻结）
 - [`rodin-device-special`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/rodin-device-special) — rodin 设备定制文件
 - [`rodin-lz4-v1.10.0-backport`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/rodin-lz4-v1.10.0-backport) — LZ4 v1.10.0 回移植（暂停更新）
 - [`dash-w-oss`](https://github.com/omajili-manbu/Xiaomi_Rodin_Kernel_Enhance/tree/dash-w-oss) — REDMI Turbo 5 Max（Android W） 小米功能定制更新的参考内核
@@ -68,8 +74,8 @@
 ## 致谢
 
 - [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource) — rodin 官方内核源码（`bsp-rodin-v-oss`）
-- [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) / [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) / [KernelSU](https://github.com/tiann/KernelSU) — Root 方案
-- [SusFS](https://gitlab.com/simonpunk/susfs4ksu) — Root 隐藏
+- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) / [KernelSU](https://github.com/tiann/KernelSU) — Root 方案
+- [SuSFS](https://gitlab.com/simonpunk/susfs4ksu) — Root 隐藏
 - [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) — 防格机
 - [Linux-Patches](https://gitlab.com/xanmod/linux-patches) — BBRv3 补丁
 - AOSP `android15-6.6` / 上游 Linux 6.6 LTS
