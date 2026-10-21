@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/test-finasu-build.yml'
       - 'drivers/kernelsu/**'
+      - 'drivers/input/input.c'
       - 'fs/**'
       - 'kernel/reboot.c'
       - 'security/selinux/**'
