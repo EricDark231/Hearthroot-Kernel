@@ -2,6 +2,15 @@ name: test-finasu-build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - experiment/finasu
+    paths:
+      - '.github/workflows/test-finasu-build.yml'
+      - 'drivers/kernelsu/**'
+      - 'fs/**'
+      - 'kernel/reboot.c'
+      - 'security/selinux/**'
 
 permissions:
   contents: read
