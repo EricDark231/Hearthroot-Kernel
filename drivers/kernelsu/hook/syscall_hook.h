@@ -41,6 +41,11 @@ bool ksu_has_syscall_hook(int nr);
 // a real syscall entry (e.g. ksud hooking __NR_execve/__NR_read/__NR_fstat).
 void ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old);
 
+#ifdef CONFIG_ARM64
+int ksu_syscall_table_hook_checked(int nr, syscall_fn_t fn,
+                                   syscall_fn_t *old);
+#endif
+
 // Restore syscall_table[@nr] to its original value recorded by
 // ksu_syscall_table_hook(), and remove the entry from the tracking list.
 // Use this to cleanly undo a direct hook when it is no longer needed

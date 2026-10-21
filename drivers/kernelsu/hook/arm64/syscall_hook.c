@@ -38,8 +38,14 @@ static int patch_syscall_table(int nr, syscall_fn_t fn)
     pr_info("patch syscall %d, 0x%lx -> 0x%lx\n", nr, (unsigned long)READ_ONCE(ksu_syscall_table[nr]),
             (unsigned long)fn);
 
-    if (ksu_patch_text(&ksu_syscall_table[nr], &fn, sizeof(fn), KSU_PATCH_TEXT_FLUSH_DCACHE)) {
+    if (ksu_patch_text(&ksu_syscall_table[nr], &fn, sizeof(fn),
+                       KSU_PATCH_TEXT_FLUSH_DCACHE)) {
         pr_err("patch syscall %d failed\n", nr);
+        return -EIO;
+    }
+
+    if (READ_ONCE(ksu_syscall_table[nr]) != fn) {
+        pr_err("patch syscall %d verification failed\n", nr);
         return -EIO;
     }
 
@@ -48,43 +54,79 @@ static int patch_syscall_table(int nr, syscall_fn_t fn)
 
 // Direct syscall table patching: overwrite syscall_table[nr] with fn,
 // save original to *old, and record for restoration at module exit.
-void ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old)
+int ksu_syscall_table_hook_checked(int nr, syscall_fn_t fn,
+                                          syscall_fn_t *old)
 {
-    if (ksu_syscall_table == NULL)
-        return;
-    if (nr < 0 || nr >= __NR_syscalls) {
-        pr_info("invalid nr: %d\n", nr);
-        return;
-    }
+    syscall_fn_t orig;
+    int i, ret;
+    bool found = false;
+
+    if (!ksu_syscall_table)
+        return -ENOENT;
+
+    if (nr < 0 || nr >= __NR_syscalls)
+        return -EINVAL;
 
     mutex_lock(&hooked_entries_lock);
 
-    syscall_fn_t orig = READ_ONCE(ksu_syscall_table[nr]);
-    if (old)
-        *old = orig;
+    orig = READ_ONCE(ksu_syscall_table[nr]);
 
-    // Record for later restoration
-    int i;
-    bool found = false;
     for (i = 0; i < hooked_count; i++) {
         if (hooked_entries[i].nr == nr) {
             found = true;
             break;
         }
     }
-    if (!found) {
-        if (hooked_count < ARRAY_SIZE(hooked_entries)) {
-            hooked_entries[hooked_count].nr = nr;
-            hooked_entries[hooked_count].orig = orig;
-            hooked_count++;
-        } else {
-            pr_warn("hooked_entries full, cannot track syscall %d for restoration\n", nr);
-        }
+
+    if (found) {
+        ret = -EEXIST;
+        goto out;
     }
 
-    patch_syscall_table(nr, fn);
+    if (hooked_count >= ARRAY_SIZE(hooked_entries)) {
+        ret = -ENOSPC;
+        goto out;
+    }
 
+    /*
+     * Publish the original handler before installing the replacement.
+     * Another CPU may enter the hook immediately after the table changes.
+     */
+    if (old)
+        WRITE_ONCE(*old, orig);
+
+    ret = patch_syscall_table(nr, fn);
+    if (ret) {
+        if (READ_ONCE(ksu_syscall_table[nr]) == orig)
+            goto out;
+
+        pr_err("syscall %d installation failed; attempting rollback\n",
+               nr);
+
+        patch_syscall_table(nr, orig);
+
+        if (READ_ONCE(ksu_syscall_table[nr]) == orig)
+            goto out;
+
+        pr_err("syscall %d rollback unverified; tracking for restoration\n",
+               nr);
+    }
+
+    hooked_entries[hooked_count].nr = nr;
+    hooked_entries[hooked_count].orig = orig;
+    hooked_count++;
+
+out:
     mutex_unlock(&hooked_entries_lock);
+    return ret;
+}
+
+void ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old)
+{
+    int ret = ksu_syscall_table_hook_checked(nr, fn, old);
+
+    if (ret)
+        pr_err("cannot install syscall hook %d: %d\n", nr, ret);
 }
 
 // Restore syscall_table[nr] to its original value and remove from tracking list.
@@ -102,6 +144,14 @@ void ksu_syscall_table_unhook(int nr)
     for (i = 0; i < hooked_count; i++) {
         if (hooked_entries[i].nr == nr) {
             patch_syscall_table(nr, hooked_entries[i].orig);
+
+            if (READ_ONCE(ksu_syscall_table[nr]) !=
+                hooked_entries[i].orig) {
+                pr_err("failed to verify unhook of syscall %d; keeping tracking entry\n",
+                       nr);
+                mutex_unlock(&hooked_entries_lock);
+                return;
+            }
             // Remove entry by swapping with last
             hooked_entries[i] = hooked_entries[--hooked_count];
             mutex_unlock(&hooked_entries_lock);
@@ -215,40 +265,53 @@ void __init ksu_syscall_hook_init(void)
         return;
     }
 
-    ksu_dispatcher_nr = ni_slot;
-    ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher, NULL);
-    pr_info("dispatcher installed at slot %d\n", ksu_dispatcher_nr);
+    if (ksu_syscall_table_hook_checked(
+            ni_slot, (syscall_fn_t)ksu_syscall_dispatcher, NULL)) {
+        pr_err("failed to install syscall dispatcher at slot %d\n", ni_slot);
+        return;
+    }
+
+    WRITE_ONCE(ksu_dispatcher_nr, ni_slot);
+    pr_info("dispatcher installed at slot %d\n", ni_slot);
 }
 
 void __exit ksu_syscall_hook_exit(void)
 {
     int i;
+    int pending = 0;
 
-    if (!ksu_syscall_table)
-        goto clear_state;
+    if (!ksu_syscall_table) {
+        pr_err("cannot restore syscall hooks: syscall table unavailable\n");
+        return;
+    }
 
-    // First, restore all patched syscall table entries while the dispatcher
-    // and hook table are still intact, so in-flight syscalls see valid state.
     mutex_lock(&hooked_entries_lock);
+
     for (i = 0; i < hooked_count; i++) {
         int nr = hooked_entries[i].nr;
         syscall_fn_t orig = hooked_entries[i].orig;
+        int ret;
 
-        pr_info("restore syscall %d to 0x%lx\n", nr, (unsigned long)orig);
-        if (ksu_patch_text(&ksu_syscall_table[nr], &orig, sizeof(orig), KSU_PATCH_TEXT_FLUSH_DCACHE)) {
-            pr_err("restore syscall %d failed\n", nr);
-        }
+        ret = patch_syscall_table(nr, orig);
+
+        if (READ_ONCE(ksu_syscall_table[nr]) == orig)
+            continue;
+
+        pr_err("failed to restore syscall %d: %d\n", nr, ret);
+        hooked_entries[pending++] = hooked_entries[i];
     }
-    hooked_count = 0;
+
+    hooked_count = pending;
     mutex_unlock(&hooked_entries_lock);
 
-clear_state:
-    // Now that the syscall table is restored, clear internal state.
-    // At this point the tracepoint is already unregistered and synchronized
-    // (done by ksu_syscall_hook_manager_exit before calling us), so no new
-    // dispatches will occur.
+    if (pending) {
+        pr_err("%d syscall hooks remain unrestored; preserving state\n",
+               pending);
+        return;
+    }
+
     memset(syscall_hooks, 0, sizeof(syscall_hooks));
-    ksu_dispatcher_nr = -1;
+    WRITE_ONCE(ksu_dispatcher_nr, -1);
 
     pr_info("all syscall hooks restored\n");
 }

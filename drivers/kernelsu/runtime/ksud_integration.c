@@ -658,13 +658,28 @@ void __init ksu_ksud_init()
 {
     int ret;
 
+#ifdef CONFIG_ARM64
+    ret = ksu_syscall_table_hook_checked(
+        __NR_read, ksu_sys_read, &orig_sys_read);
+    if (ret) {
+        pr_err("ksud: failed to hook read: %d\n", ret);
+    } else {
+        ret = ksu_syscall_table_hook_checked(
+            __NR_fstat, ksu_sys_fstat, &orig_sys_fstat);
+        if (ret) {
+            pr_err("ksud: failed to hook fstat: %d; restoring read\n", ret);
+            ksu_syscall_table_unhook(__NR_read);
+        }
+    }
+#else
     ksu_syscall_table_hook(__NR_read, ksu_sys_read, &orig_sys_read);
     ksu_syscall_table_hook(__NR_fstat, ksu_sys_fstat, &orig_sys_fstat);
+#endif
+
+    INIT_WORK(&stop_input_hook_work, do_stop_input_hook);
 
     ret = register_kprobe(&input_event_kp);
     pr_info("ksud: input_event_kp: %d\n", ret);
-
-    INIT_WORK(&stop_input_hook_work, do_stop_input_hook);
 }
 
 void __exit ksu_ksud_exit()
