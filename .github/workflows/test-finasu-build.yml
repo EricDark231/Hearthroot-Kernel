@@ -146,6 +146,14 @@ jobs:
           echo "=== BUILD SUCCESS ==="
           ls -lh arch/arm64/boot/Image
 
+      - name: Upload experimental kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: hearthroot-finasu-Image
+          path: arch/arm64/boot/Image
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload diagnostic log
         if: always()
         uses: actions/upload-artifact@v4
