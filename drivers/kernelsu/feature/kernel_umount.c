@@ -1,6 +1,6 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/version.h>
+#include <linux/task_work.h>
 #include <linux/cred.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
@@ -9,21 +9,20 @@
 #include <linux/path.h>
 #include <linux/printk.h>
 #include <linux/types.h>
-#include <linux/uaccess.h>
 
 #ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs_def.h>
-#endif // #ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#include <linux/workqueue.h>
+extern struct work_struct susfs_extra_works;
+#endif
 
 #include "feature/kernel_umount.h"
 #include "klog.h" // IWYU pragma: keep
-#include "compat/kernel_compat.h"
 #include "policy/allowlist.h"
 #include "selinux/selinux.h"
 #include "policy/feature.h"
 #include "runtime/ksud_boot.h"
 #include "ksu.h"
-#include "feature/sucompat.h"
 
 static bool ksu_kernel_umount_enabled = true;
 
@@ -49,6 +48,7 @@ static const struct ksu_feature_handler kernel_umount_handler = {
 };
 
 extern int path_umount(struct path *path, int flags);
+
 static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
 {
     int err = path_umount(path, flags);
@@ -57,7 +57,7 @@ static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
     }
 }
 
-void try_umount(const char *mnt, int flags)
+static void try_umount(const char *mnt, int flags)
 {
     struct path path;
     int err = kern_path(mnt, 0, &path);
@@ -74,28 +74,18 @@ void try_umount(const char *mnt, int flags)
     ksu_umount_mnt(mnt, &path, flags);
 }
 
-#ifdef CONFIG_KSU_SUSFS
-extern struct work_struct susfs_extra_works;
-#endif
+struct umount_tw {
+    struct callback_head cb;
+};
 
-static void do_umount_for_current_task()
+int ksu_handle_umount(uid_t old_uid, uid_t new_uid, bool was_zygote)
 {
-    const struct cred *saved = override_creds(ksu_cred);
-    struct mount_entry *entry;
-    down_read(&mount_list_lock);
-    list_for_each_entry (entry, &mount_list, list) {
-        pr_info("%s: unmounting: %s flags: 0x%x\n", __func__, entry->umountable, entry->flags);
-        try_umount(entry->umountable, entry->flags);
+    // if there isn't any module mounted, just ignore it!
+#ifndef CONFIG_KSU_SUSFS
+    if (!ksu_module_mounted || !ksu_kernel_umount_enabled) {
+        return 0;
     }
-    up_read(&mount_list_lock);
-
-    revert_creds(saved);
-}
-
-int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
-{
-    const struct cred *saved;
-    struct mount_entry *entry;
+#endif
 
     // There are 6 scenarios:
     // 1. Normal app: zygote -> appuid
@@ -112,37 +102,38 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
         return 0;
     }
 
-    // no need to check zygote here, because we already check it in the setuid call.
-
-    // in susfs's implementation, ksu_kernel_umount is ignored, so this keeps the same behavior.
-    if (!ksu_kernel_umount_enabled) {
-        goto skip_umount_task;
+    // check old process's selinux context, if it is not zygote, ignore it!
+    // because some su apps may setuid to untrusted_app but they are in global mount namespace
+    // when we umount for such process, that is a disaster!
+    // also handle case 4 and 5
+    if (!was_zygote) {
+        pr_info("handle umount ignore non zygote child: %d\n", current->pid);
+        return 0;
     }
-
-    // if there isn't any module mounted, just ignore it!
-    if (!ksu_module_mounted) {
-        goto skip_umount_task;
-    }
-
+#ifdef CONFIG_KSU_SUSFS
+    if (ksu_module_mounted && ksu_kernel_umount_enabled) {
+#endif
     // umount the target mnt
     pr_info("handle umount for uid: %d, pid: %d\n", new_uid, current->pid);
 
-    saved = override_creds(ksu_cred);
+    const struct cred *saved = override_creds(ksu_cred);
 
+    struct mount_entry *entry;
     down_read(&mount_list_lock);
     list_for_each_entry (entry, &mount_list, list) {
-        pr_info("%s: unmounting: %s flags 0x%x\n", __func__, entry->umountable, entry->flags);
+        pr_info("%s: unmounting: %s flags: 0x%x\n", __func__, entry->umountable, entry->flags);
         try_umount(entry->umountable, entry->flags);
     }
     up_read(&mount_list_lock);
 
     revert_creds(saved);
 
-skip_umount_task:
-    // do susfs setuid when susfs enabled
 #ifdef CONFIG_KSU_SUSFS
+    }
+
     if (!work_pending(&susfs_extra_works))
         schedule_work(&susfs_extra_works);
+
     susfs_set_current_proc_umounted();
 #endif
 

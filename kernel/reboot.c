@@ -694,7 +694,8 @@ EXPORT_SYMBOL_GPL(kernel_power_off);
 DEFINE_MUTEX(system_transition_mutex);
 
 #ifdef CONFIG_KSU_SUSFS
-extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+#include <linux/susfs_def.h>
+extern int ksu_handle_susfs_cmd(unsigned int cmd, void __user **arg);
 #endif
 /*
  * Reboot system call: for obvious reasons only root may call it,
@@ -712,12 +713,12 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	int ret = 0;
 
 #ifdef CONFIG_KSU_SUSFS
-	ret = ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-	if (ret) {
-		goto orig_flow;
-	}
-	return ret;
-orig_flow:
+        if (magic1 == 0xDEADBEEF && magic2 == SUSFS_MAGIC) {
+                if (current_uid().val != 0)
+                        return -EPERM;
+
+                return ksu_handle_susfs_cmd(cmd, &arg);
+        }
 #endif
 
 	/* We only trust the superuser with rebooting the system. */

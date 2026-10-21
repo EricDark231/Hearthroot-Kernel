@@ -1,0 +1,146 @@
+name: test-finasu-build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CLANG_VER: clang-r596125
+  CLANG_BRANCH: mirror-goog-main-llvm-toolchain-source
+  BUILD_USER: EricDark231
+  BUILD_HOST: Hearthroot
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/experiment/finasu'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout experimental FinaSU branch
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/finasu
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flex bison bc libelf-dev libssl-dev dwarves lz4 zip unzip
+
+      - name: Set build host name (EricDark231@Hearthroot)
+        run: |
+          set -euo pipefail
+          # hostname 本身不允许 '@'，所以 runner 主机名用等价的合法写法，
+          # 并额外用 KBUILD_BUILD_USER/HOST 让内核 banner 精确显示 EricDark231@Hearthroot
+          sudo hostname 'EricDark231@Hearthroot' 2>/dev/null \
+            || sudo hostnamectl set-hostname 'Hearthroot' 2>/dev/null \
+            || true
+          echo "runner hostname now: $(hostname)"
+          {
+            echo "KBUILD_BUILD_USER=${BUILD_USER}"
+            echo "KBUILD_BUILD_HOST=${BUILD_HOST}"
+          } >> "$GITHUB_ENV"
+          echo "kernel banner will report: ${BUILD_USER}@${BUILD_HOST}"
+      - name: Cache clang-r596125
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang
+          key: hearthroot-clang-${{ runner.os }}-${{ env.CLANG_VER }}
+
+      - name: Download clang-r596125
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          mkdir -p "$CLANG_DIR"
+          # 1) 分支直链（+archive） 2) 固定 commit 直链 3) 稀疏克隆兜底
+          URLS=(
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/${CLANG_VER}.tar.gz"
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/8b6826407e25a197d7cf7ceacab0bf67c11173de/${CLANG_VER}.tar.gz"
+          )
+          ok=""
+          for url in "${URLS[@]}"; do
+            echo "trying $url"
+            rm -rf "$CLANG_DIR"; mkdir -p "$CLANG_DIR"
+            if curl -fL --retry 3 --connect-timeout 30 --max-time 1200 "$url" -o "$RUNNER_TEMP/clang.tgz" \
+               && tar -xzf "$RUNNER_TEMP/clang.tgz" -C "$CLANG_DIR"; then
+              if [ -x "$CLANG_DIR/bin/clang" ]; then
+                ok=yes
+              elif [ -x "$CLANG_DIR/$CLANG_VER/bin/clang" ]; then
+                mv "$CLANG_DIR/$CLANG_VER"/* "$CLANG_DIR"/ && ok=yes
+              fi
+              [ -n "$ok" ] && break
+            fi
+            echo "::warning::download/extract failed: $url"
+          done
+          if [ -z "$ok" ]; then
+            echo "::warning::archive endpoints failed, falling back to sparse git clone"
+            rm -rf "$CLANG_DIR"; mkdir -p "$CLANG_DIR"
+            git clone --depth=1 --filter=blob:none --sparse -b "$CLANG_BRANCH" \
+              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+              "$RUNNER_TEMP/clang-src"
+            git -C "$RUNNER_TEMP/clang-src" sparse-checkout set "$CLANG_VER"
+            mv "$RUNNER_TEMP/clang-src/$CLANG_VER"/* "$CLANG_DIR"/
+          fi
+          test -x "$CLANG_DIR/bin/clang" || { echo "::error::clang binary not found after download"; ls -la "$CLANG_DIR"; exit 1; }
+
+      - name: Setup Clang
+        run: |
+          set -euo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          test -x "$CLANG_DIR/bin/clang" || {
+            echo "::error::cached/downloaded clang binary not found"
+            exit 1
+          }
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          echo "Clang cache hit: ${{ steps.clang-cache.outputs.cache-hit }}"
+          "$CLANG_DIR/bin/clang" --version
+
+
+      - name: Compile experimental FinaSU kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== EXPERIMENTAL FINASU BUILD ==="
+          git branch --show-current
+          git log -1 --format='%h %s'
+
+          {
+            echo "=== GENERATING CONFIGURATION ==="
+            make ARCH=arm64 LLVM=1 gki_defconfig
+
+            echo "=== CONFIGURATION ==="
+            grep -E '^CONFIG_KSU=|^CONFIG_KSU_SUSFS=' .config
+
+            JOBS="$(nproc)"
+            if [ "$JOBS" -gt 4 ]; then JOBS=4; fi
+            echo "Building Image with ${JOBS} jobs"
+
+            make ARCH=arm64 LLVM=1 -j"$JOBS" Image
+          } 2>&1 | tee finasu-build.log
+
+          test -s arch/arm64/boot/Image
+
+          echo "=== BUILD SUCCESS ==="
+          ls -lh arch/arm64/boot/Image
+
+      - name: Upload diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hearthroot-finasu-build-log
+          path: finasu-build.log
+          if-no-files-found: warn
+          retention-days: 7

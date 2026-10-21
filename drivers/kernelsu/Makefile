@@ -9,13 +9,11 @@ else
 KBUILD_ARGS := M=$(ODIR) src=$(MDIR)
 endif
 
-ifneq ($(KDIR),)
 $(info -- KDIR: $(KDIR))
 $(info -- MDIR: $(MDIR))
 $(info -- OUTPUT DIR: $(ODIR))
 $(info -- KMI: $(KMI))
 $(info -- KBUILD_ARGS: $(KBUILD_ARGS))
-endif
 
 .PHONY: all compdb clean format check-format
 
@@ -26,13 +24,15 @@ all: check_symbol
 compdb:
 	python3 $(MDIR)/.vscode/generate_compdb.py -O $(ODIR) $(MDIR)
 clean:
-	make -C $(KDIR) M=$(ODIR) src=$(MDIR) clean
+	$(MAKE) -C $(KDIR) $(KBUILD_ARGS) clean
 	rm check_symbol
 check_symbol: tools/check_symbol.c
 	$(CC) tools/check_symbol.c -o check_symbol
+FORMAT_FILES = find . -path ./preinit/runner/nolibc -prune -o \( -name "*.c" -o -name "*.h" \) -print0
+
 format:
-	find . \( -name "*.c" -o -name "*.h" \) -print0 | xargs -0 clang-format -i
+	$(FORMAT_FILES) | xargs -0 clang-format -i
 check-format:
-	find . \( -name "*.c" -o -name "*.h" \) -print0 | xargs -0 clang-format --dry-run --Werror
+	$(FORMAT_FILES) | xargs -0 clang-format --dry-run --Werror
 
 # Keep a new line here!! Because someone may append config
