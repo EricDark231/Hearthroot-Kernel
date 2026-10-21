@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/test-finasu-build.yml'
       - 'drivers/kernelsu/**'
+      - 'packaging/finasu/**'
       - 'drivers/input/input.c'
       - 'fs/**'
       - 'kernel/reboot.c'
@@ -151,6 +152,64 @@ jobs:
         with:
           name: hearthroot-finasu-Image
           path: arch/arm64/boot/Image
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Prepare experimental FinaSU AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== PREPARING FINASU TEST PACKAGE ==="
+
+          test -s arch/arm64/boot/Image
+          test -f packaging/finasu/anykernel.sh
+
+          lz4 -f -l -9 \
+            arch/arm64/boot/Image \
+            arch/arm64/boot/Image.lz4
+
+          MAGIC=$(od -An -tx1 -N4 arch/arm64/boot/Image.lz4 | tr -d '[:space:]')
+          test "$MAGIC" = "02214c18" || {
+            echo "::error::Invalid legacy LZ4 magic: $MAGIC"
+            exit 1
+          }
+
+          git clone --depth=1 -b gki-2.0 \
+            https://github.com/WildKernels/AnyKernel3.git AnyKernel3
+
+          rm -rf AnyKernel3/.git
+
+          python3 - <<'AK3PATCH'
+          from pathlib import Path
+          path = Path("AnyKernel3/META-INF/com/google/android/update-binary")
+          text = path.read_text()
+          old = "$bb --install -s bin;"
+          new = "$bb --install bin;"
+          if text.count(old) != 1:
+              raise SystemExit("Unexpected AnyKernel3 BusyBox installer")
+          path.write_text(text.replace(old, new, 1))
+          AK3PATCH
+
+          cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
+          cp packaging/finasu/anykernel.sh AnyKernel3/anykernel.sh
+
+          KERNEL_RELEASE=$(cat include/config/kernel.release)
+          sed -i "s|@KERNEL_RELEASE@|${KERNEL_RELEASE}|g" AnyKernel3/anykernel.sh
+
+          ! grep -q '@KERNEL_RELEASE@' AnyKernel3/anykernel.sh
+          grep -q 'FinaSU TEST' AnyKernel3/anykernel.sh
+
+          echo "=== PACKAGE CONTENTS ==="
+          ls -lh AnyKernel3/Image AnyKernel3/anykernel.sh
+          test -s AnyKernel3/tools/ak3-core.sh
+          test -s AnyKernel3/META-INF/com/google/android/update-binary
+
+      - name: Upload experimental FinaSU AnyKernel3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hearthroot-FinaSU-rodin-TEST-AnyKernel3
+          path: AnyKernel3/**
           if-no-files-found: error
           retention-days: 7
 
