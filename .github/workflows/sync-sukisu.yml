@@ -5,7 +5,7 @@ name: sync-sukisu
 # drivers/kernelsu.
 # Rules (per owner):
 #   - anchored by release tag, never by branch HEAD: no more per-commit chasing
-#   - the SUSFS bridge (.github/patches/10_enable_susfs_for_ksu-v4.2.1.patch)
+#   - the SUSFS bridge (.github/patches/10_enable_susfs_for_ksu-v4.2.1-r1.patch)
 #     must apply to the new tag, otherwise abort, push nothing, open an issue
 #   - SUSFS kernel-side files are never overwritten in-tree (bootstrap only)
 # NOTE: this workflow does NOT build-test the landed tree; build locally before
@@ -35,7 +35,7 @@ env:
   SUKISU_REPO: SukiSU-Ultra/SukiSU-Ultra
   SUSFS_REPO_URL: https://github.com/omajili-manbu/susfs4ksu.git
   SUSFS_BRANCH: gki-android15-6.6-mod
-  BRIDGE_PATCH: .github/patches/10_enable_susfs_for_ksu-v4.2.1.patch
+  BRIDGE_PATCH: .github/patches/10_enable_susfs_for_ksu-v4.2.1-r1.patch
   ISSUE_TITLE: "[auto-sync] SukiSU-Ultra sync failed - manual attention needed"
 
 jobs:
@@ -241,7 +241,7 @@ jobs:
           grep -qE '^git_commit_count = [0-9]+$' drivers/kernelsu/Kbuild
           grep -q 'menu "KernelSU - SUSFS"' drivers/kernelsu/Kconfig
           grep -qw susfs_init drivers/kernelsu/core/init.c
-          for d in arm64 arm32 x86_64; do
+          for d in arm64 riscv64 x86_64; do
             [ -d "drivers/kernelsu/hook/$d" ] || { echo "::error::missing drivers/kernelsu/hook/$d"; exit 1; }
           done
           test -f fs/susfs.c && test -f include/linux/susfs.h && test -f include/linux/susfs_def.h

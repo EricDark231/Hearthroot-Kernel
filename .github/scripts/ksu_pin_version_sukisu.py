@@ -29,6 +29,9 @@ ap.add_argument('--count', required=True, help='commit count baked into the rele
 ap.add_argument('--sha8', required=True)
 ap.add_argument('--branch', default='main')
 a = ap.parse_args()
+# CI passes the release tag_name verbatim; it may carry the leading v that
+# KSU_VERSION_FULL prepends itself, so normalize to the bare version.
+a.tag = a.tag[1:] if a.tag.startswith("v") else a.tag
 
 text = open(a.kbuild).read()
 
