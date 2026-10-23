@@ -2,10 +2,14 @@ kernelsu-objs := core/init.o
 
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/module_blacklist.o
+kernelsu-objs += feature/mount_hide.o
 kernelsu-objs += feature/sulog.o
 kernelsu-objs += feature/sucompat.o
 
 kernelsu-objs += hook/setuid_hook.o
+# mount_hide (v4.2.1-r1) patches file_operations pointers through the
+# arm64 text-patching helper; it does not touch the syscall table.
+kernelsu-objs += hook/arm64/patch_memory.o
 
 kernelsu-objs += infra/file_wrapper.o
 kernelsu-objs += infra/event_queue.o
@@ -15,14 +19,20 @@ kernelsu-objs += infra/symbol_resolver.o
 
 ifneq ($(CONFIG_KSU_DISABLE_MANAGER),y)
 kernelsu-objs += manager/apk_sign.o
-kernelsu-objs += manager/dynamic_manager.o
 kernelsu-objs += manager/pkg_observer.o
 kernelsu-objs += manager/throne_tracker.o
+kernelsu-objs += extension/dynamic_manager.o
+kernelsu-objs += extension/dynamic_sig_fallback.o
 endif
 
 kernelsu-objs += policy/allowlist.o
 kernelsu-objs += policy/app_profile.o
 kernelsu-objs += policy/feature.o
+
+kernelsu-objs += extension/extension.o
+kernelsu-objs += extension/cpu_spoof.o
+kernelsu-objs += extension/umount_paths.o
+kernelsu-objs += extension/susfs_extension.o
 
 kernelsu-objs += runtime/boot_event.o
 kernelsu-objs += runtime/ksud_integration.o
@@ -45,8 +55,6 @@ kernelsu-objs += feature/shell_su_adb_only.o
 
 kernelsu-objs += feature/uts_spoof.o
 
-kernelsu-objs += feature/cpu_spoof.o
-
 ifdef KBUILD_EXTMOD
 ifeq ($(CONFIG_KSU_DISABLE_MANAGER),y)
 ccflags-y += -DCONFIG_KSU_DISABLE_MANAGER=1
@@ -59,9 +67,13 @@ ccflags-y += -DCONFIG_KSU_DEBUG=1
 endif
 endif
 
-obj-$(CONFIG_KPM) += kpm/compact.o
-obj-$(CONFIG_KPM) += kpm/kpm.o
-obj-$(CONFIG_KPM) += kpm/super_access.o
+obj-$(CONFIG_KPM) += extension/kpm/kpm.o
+obj-$(CONFIG_KPM) += extension/kpm/compact.o
+obj-$(CONFIG_KPM) += extension/kpm/super_access.o
+# kpm.c provides the extension glue (ksu_extension_kpm_*), referenced
+# unconditionally by extension/extension.c, so build it even when
+# CONFIG_KPM is off — its set/get/io become no-ops.
+kernelsu-objs += extension/kpm.o
 
 ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
 ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
@@ -82,6 +94,12 @@ endif
 
 ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
 
+# preinit runner: requires the inline syscall-table hook architecture
+# (ksu_syscall_table, hook/<arch>/syscall_hook.c) which this bridge does not
+# compile - it only ever runs from syscall_event_bridge. Disable it outright;
+# preinit/preinit.h falls back to KSU_NO_PREINIT static inline no-ops.
+ccflags-y += -DKSU_NO_PREINIT
+
 obj-$(CONFIG_KSU) += kernelsu.o
 
 MDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -93,30 +111,30 @@ REPO_BRANCH := main
 VERSION_BASE    := 40000
 VERSION_OFFSET  := 2815
 
-# Vendored as an in-tree copy of SukiSU-Ultra v4.2.1 @ fd2a8515 (release tag v4.2.1, count 40994).
+# Vendored as an in-tree copy of SukiSU-Ultra v4.2.1-r1 @ a619544c (release tag v4.2.1-r1, count 41049).
 # Do NOT restore the $(shell git/curl) probes below: this directory
 # lives inside the kernel git repository, so they would report the
 # kernel tree's sha/count and hit the network on every build.
-# fd2a8515
+# a619544c
 GIT_BIN  := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin git
 CURL_BIN := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin curl
 
 KSU_SRC := $(if $(filter $(srctree),$(src)),$(src),$(srctree)/$(src))
 KSU_SRC := $(if $(wildcard $(KSU_SRC)/../.git),$(KSU_SRC),$(MDIR))
 
-git_short_sha    = fd2a8515
+git_short_sha    = a619544c
 git_branch       = main
-git_commit_count = 40994
+git_commit_count = 41049
 git_latest_tag   = $(shell cd $(KSU_SRC) && $(GIT_BIN) describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 
 # vendored in-tree: no shallow fetch, no git query, no network query
 
 GITHUB_API_BASE  := https://api.github.com/repos/$(REPO_OWNER)/$(REPO_NAME)
-KSU_GITHUB_VER   := 4.2.1
+KSU_GITHUB_VER   := 4.2.1-r1
 GITHUB_COMMITS   :=
 LOCAL_COUNT     := $(if $(GITHUB_COMMITS),$(GITHUB_COMMITS),$(git_commit_count))
-KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),13000)
-VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.2.0)
+KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),41000)
+VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.2.1)
 KSU_VERSION_FULL := $(if $(call git_short_sha),v$(VERSION_TAG)-$(call git_short_sha)@$(call git_branch),v$(VERSION_TAG)-$(REPO_NAME)-unknown@unknown)
 $(info -- $(REPO_NAME) version: $(KSU_VERSION) [$(KSU_VERSION_FULL)])
 

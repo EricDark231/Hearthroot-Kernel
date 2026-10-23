@@ -29,6 +29,8 @@
 #include "supercall/supercall.h"
 #include "sulog/event.h"
 #include "uapi/sulog.h"
+// userspace_stack_buffer moved to util.h (static inline) in v4.2.1-r1.
+#include "util.h"
 
 #define SU_PATH "/system/bin/su"
 #define SH_PATH "/system/bin/sh"
@@ -65,15 +67,6 @@ static const struct ksu_feature_handler su_compat_handler = {
     .get_handler = su_compat_feature_get,
     .set_handler = su_compat_feature_set,
 };
-
-static void __user *userspace_stack_buffer(const void *d, size_t len)
-{
-    // To avoid having to mmap a page in userspace, just write below the stack
-    // pointer.
-    char __user *p = (void __user *)current_user_stack_pointer() - len;
-
-    return copy_to_user(p, d, len) ? NULL : p;
-}
 
 static char __user *sh_user_path(void)
 {

@@ -21,6 +21,7 @@
 #include "infra/seccomp_cache.h"
 #include "supercall/supercall.h"
 #include "feature/kernel_umount.h"
+#include "feature/mount_hide.h"
 
 extern u32 susfs_zygote_sid;
 extern u32 susfs_zygote_next_sid;
@@ -155,10 +156,12 @@ int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 void __init ksu_setuid_hook_init(void)
 {
     ksu_kernel_umount_init();
+    ksu_mount_hide_init();
 }
 
 void __exit ksu_setuid_hook_exit(void)
 {
     pr_info("ksu_core_exit\n");
     ksu_kernel_umount_exit();
+    ksu_mount_hide_exit();
 }
