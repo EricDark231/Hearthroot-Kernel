@@ -54,6 +54,7 @@ kernelsu-objs += feature/selinux_hide.o
 kernelsu-objs += feature/shell_su_adb_only.o
 
 kernelsu-objs += feature/uts_spoof.o
+kernelsu-objs += feature/avc_spoof.o
 
 ifdef KBUILD_EXTMOD
 ifeq ($(CONFIG_KSU_DISABLE_MANAGER),y)
@@ -111,26 +112,26 @@ REPO_BRANCH := main
 VERSION_BASE    := 40000
 VERSION_OFFSET  := 2815
 
-# Vendored as an in-tree copy of SukiSU-Ultra v4.2.1-r1 @ a619544c (release tag v4.2.1-r1, count 41049).
+# Vendored as an in-tree copy of SukiSU-Ultra v4.2.1-r2 @ d6b36700 (release tag v4.2.1-r2, count 41068).
 # Do NOT restore the $(shell git/curl) probes below: this directory
 # lives inside the kernel git repository, so they would report the
 # kernel tree's sha/count and hit the network on every build.
-# a619544c
+# d6b36700
 GIT_BIN  := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin git
 CURL_BIN := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin curl
 
 KSU_SRC := $(if $(filter $(srctree),$(src)),$(src),$(srctree)/$(src))
 KSU_SRC := $(if $(wildcard $(KSU_SRC)/../.git),$(KSU_SRC),$(MDIR))
 
-git_short_sha    = a619544c
+git_short_sha    = d6b36700
 git_branch       = main
-git_commit_count = 41049
+git_commit_count = 41068
 git_latest_tag   = $(shell cd $(KSU_SRC) && $(GIT_BIN) describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 
 # vendored in-tree: no shallow fetch, no git query, no network query
 
 GITHUB_API_BASE  := https://api.github.com/repos/$(REPO_OWNER)/$(REPO_NAME)
-KSU_GITHUB_VER   := 4.2.1-r1
+KSU_GITHUB_VER   := 4.2.1-r2
 GITHUB_COMMITS   :=
 LOCAL_COUNT     := $(if $(GITHUB_COMMITS),$(GITHUB_COMMITS),$(git_commit_count))
 KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),41000)

@@ -23,6 +23,7 @@
 #include "selinux/selinux.h"
 #include "feature/adb_root.h"
 #include "feature/selinux_hide.h"
+#include "feature/avc_spoof.h"
 #include "feature/uts_spoof.h"
 #include "feature/shell_su_adb_only.h"
 #include "hook/setuid_hook.h"
@@ -121,6 +122,7 @@ int __init kernelsu_init(void)
     ksu_sulog_init();
     ksu_adb_root_init();
     ksu_selinux_hide_init();
+    ksu_avc_spoof_init();
     ksu_shell_su_adb_only_init();
 
     ksu_supercalls_init();
@@ -163,6 +165,8 @@ void __exit kernelsu_exit(void)
     ksu_allowlist_exit();
 
     ksu_shell_su_adb_only_exit();
+
+    ksu_avc_spoof_exit();
 
     ksu_selinux_hide_exit();
 
