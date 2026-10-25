@@ -4,13 +4,15 @@ name: release-kernel
 # 正文格式对齐 v1.3（内核版本 / 构建时间 / 构建工具链 / 下载说明 / 变更）：
 #   - 内核版本 / 构建时间 / 构建工具链 从 AK3 包内 Image 的 Linux banner 中提取，
 #     提取失败时回退到 artifact 名 / 构建记录时间
-#   - 下载说明按实际收集到的资产生成：带 root / 无 root 两种内核 + 标准 / 伪装两种管理器
+#   - 每种内核各自的版本 / 构建时间 / 构建工具链；下载说明按实际收集到的资产生成：
+#     带 root / 无 root 两种内核 + 标准 / 伪装两种管理器
 #   - 变更内容优先用手动输入的 Markdown，留空时按「上一个 tag..本次构建 commit」自动生成
 # 产物（assets）：
 #   - AnyKernel3_<ver>.zip：带 root 内核可刷包（取 KERNEL_BRANCH 最近一次成功构建）
 #   - AnyKernel3_<ver>_noroot.zip：无 root 内核可刷包（取 NOROOT_BRANCH 最近一次成功构建，
 #     include_noroot=false 时跳过）
-#   - SukiSU_v*_<count>-release[-spoofed].apk：标准 / 伪装管理器（构建 run 里有哪个带哪个）
+#   - SukiSU_v*_<count>-release[-spoofed].apk：标准 / 伪装管理器（构建 run 缺的变体
+#     从锚定 release 现取，锚 tag 与 count 均取自被发布 commit，保证与内核模块配对）
 
 on:
   workflow_dispatch:
@@ -47,6 +49,7 @@ env:
   KERNEL_BRANCH: bsp-rodin-v-upstream
   NOROOT_BRANCH: bsp-rodin-v-upstream-noroot
   BUILD_WORKFLOW: build-kernel.yml
+  SUKISU_REPO: SukiSU-Ultra/SukiSU-Ultra
 
 jobs:
   release:
@@ -80,6 +83,7 @@ jobs:
 
           # 无 root 内核：取 noroot 分支最近一次成功构建（workflow 文件同名，按 head_branch 过滤）
           NOROOT_RUN_ID=""
+          NOROOT_CREATED_AT=""
           if [ "${IN_INCLUDE_NOROOT:-true}" != "false" ]; then
             NOROOT_RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${BUILD_WORKFLOW}/runs?branch=${NOROOT_BRANCH}&status=success&per_page=1" \
                             --jq '.workflow_runs[0].id // empty' || true)
@@ -87,6 +91,7 @@ jobs:
               echo "::error::no successful ${BUILD_WORKFLOW} run found on ${NOROOT_BRANCH} - dispatch build-kernel on ${NOROOT_BRANCH} first, or set include_noroot=false to publish the rooted kernel only"
               exit 1
             fi
+            NOROOT_CREATED_AT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN_ID}" --jq '.created_at')
             gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN_ID}" \
               --jq '"noroot build run: \(.id) (\(.display_title)) head=\(.head_sha) created=\(.created_at)"'
           else
@@ -98,6 +103,7 @@ jobs:
             echo "HEAD_SHA=${HEAD_SHA}"
             echo "RUN_CREATED_AT=${CREATED_AT}"
             echo "NOROOT_RUN_ID=${NOROOT_RUN_ID}"
+            echo "NOROOT_CREATED_AT=${NOROOT_CREATED_AT}"
           } >> "$GITHUB_ENV"
 
       - name: Download build artifacts
@@ -134,6 +140,51 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${aid}/zip" > "$RUNNER_TEMP/dl/$d.zip"
             unzip -oq "$RUNNER_TEMP/dl/$d.zip" -d "$RUNNER_TEMP/dl/$d"
           done
+
+          # 管理器兜底：按实际到手的 APK 文件名判定缺哪个变体（旧版 build-kernel 的
+          # manager artifact 里装的也是伪装版，artifact 名判断不出内容）。缺的变体从
+          # 锚定 release 现取：锚 tag 与 count 均取自被发布 commit（HEAD_SHA），保证
+          # 管理器与内核内建模块配对；标准版缺失视为错误，伪装版缺失降级
+          N_PLAIN=$(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' ! -name '*spoofed*' 2>/dev/null | wc -l)
+          N_SPOOF=$(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' -name '*spoofed*' 2>/dev/null | wc -l)
+          if [ "$N_PLAIN" -eq 0 ] || [ "$N_SPOOF" -eq 0 ]; then
+            SU_TAG=$(git show "${HEAD_SHA}:drivers/kernelsu/.sukisu_tag" 2>/dev/null || true)
+            if [ -z "$SU_TAG" ]; then
+              echo "::warning::no .sukisu_tag anchor at ${HEAD_SHA} - cannot backfill missing manager variants"
+            else
+              SU_REL=$(gh api "repos/${SUKISU_REPO}/releases/tags/${SU_TAG}") || { echo "::error::anchored release ${SU_TAG} not found on ${SUKISU_REPO}"; exit 1; }
+              [ "$(echo "$SU_REL" | jq -r .prerelease)" = "false" ] || { echo "::error::${SU_TAG} is a prerelease"; exit 1; }
+              SU_PINNED=$(git show "${HEAD_SHA}:drivers/kernelsu/Kbuild" 2>/dev/null | grep -E '^git_commit_count = [0-9]+$' | awk '{print $3}' || true)
+              mkdir -p "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof"
+              if [ "$N_PLAIN" -eq 0 ]; then
+                SU_PLAIN=$(echo "$SU_REL" | jq -r '.assets[].name' | grep -E '^SukiSU_.*\.apk$' | grep -v spoofed | head -n1 || true)
+                [ -n "$SU_PLAIN" ] || { echo "::error::no standard manager APK asset on release ${SU_TAG}"; exit 1; }
+                SU_COUNT=$(echo "$SU_PLAIN" | sed -n 's/^SukiSU_v[^_]*_\([0-9]*\).*\.apk$/\1/p')
+                if [ -n "$SU_COUNT" ] && [ -n "$SU_PINNED" ] && [ "$SU_COUNT" != "$SU_PINNED" ]; then
+                  echo "::error::${SU_PLAIN}: count $SU_COUNT != pinned $SU_PINNED at ${HEAD_SHA} - module/manager pairing mismatch"
+                  exit 1
+                fi
+                curl -fL --retry 3 --connect-timeout 30 "$(echo "$SU_REL" | jq -r --arg n "$SU_PLAIN" '.assets[] | select(.name==$n) | .browser_download_url')" -o "$RUNNER_TEMP/dl/mgr/$SU_PLAIN"
+                [ "$(stat -c%s "$RUNNER_TEMP/dl/mgr/$SU_PLAIN")" -gt 1000000 ] || { echo "::error::backfilled standard manager APK looks too small"; exit 1; }
+                echo "backfilled standard manager: $SU_PLAIN"
+              fi
+              if [ "$N_SPOOF" -eq 0 ]; then
+                SU_SPOOF=$(echo "$SU_REL" | jq -r '.assets[].name' | grep -E '^SukiSU_.*-spoofed\.apk$' | head -n1 || true)
+                if [ -n "$SU_SPOOF" ]; then
+                  SU_COUNT=$(echo "$SU_SPOOF" | sed -n 's/^SukiSU_v[^_]*_\([0-9]*\).*\.apk$/\1/p')
+                  if [ -n "$SU_COUNT" ] && [ -n "$SU_PINNED" ] && [ "$SU_COUNT" != "$SU_PINNED" ]; then
+                    echo "::error::${SU_SPOOF}: count $SU_COUNT != pinned $SU_PINNED at ${HEAD_SHA} - module/manager pairing mismatch"
+                    exit 1
+                  fi
+                  curl -fL --retry 3 --connect-timeout 30 "$(echo "$SU_REL" | jq -r --arg n "$SU_SPOOF" '.assets[] | select(.name==$n) | .browser_download_url')" -o "$RUNNER_TEMP/dl/spoof/$SU_SPOOF"
+                  [ "$(stat -c%s "$RUNNER_TEMP/dl/spoof/$SU_SPOOF")" -gt 1000000 ] || { echo "::error::backfilled spoofed manager APK looks too small"; exit 1; }
+                  echo "backfilled spoofed manager: $SU_SPOOF"
+                else
+                  echo "::warning::release ${SU_TAG} has no spoofed manager asset - shipping without it"
+                fi
+              fi
+            fi
+          fi
           ls -la "$RUNNER_TEMP/dl/ak3" "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" 2>/dev/null || true
 
           # 无 root 内核：noroot 分支构建的 artifact 同名规则（Rodin-<krel>-AnyKernel3），
@@ -190,23 +241,31 @@ jobs:
             echo "::warning::could not parse kernel banner from Image, falling back to artifact name / run time"
           fi
 
-          # 无 root 内核 banner（与带 root 版分开提取，供下载说明标注版本是否一致）
+          # 无 root 内核 banner（版本/构建时间/工具链与带 root 版分开提取）
           if [ -n "${NOROOT_RUN_ID:-}" ]; then
             NREL="${AK3N_NAME:-}"
             NREL="${NREL#Rodin-}"
             NREL="${NREL%-AnyKernel3}"
+            NBLDTIME="$(date -u -d "${NOROOT_CREATED_AT:-}" '+%a %b %e %H:%M:%S UTC %Y' 2>/dev/null || true)"
+            NTOOLCHAIN="clang-r596125"
             if lz4 -d -f "$RUNNER_TEMP/dl/ak3n/Image" "$RUNNER_TEMP/Image_noroot.raw" 2>/dev/null; then
               NBANNER=$(strings -n 16 "$RUNNER_TEMP/Image_noroot.raw" | grep -m1 -E '^Linux version [^ ]+ \(' || true)
               if [ -n "$NBANNER" ]; then
                 echo "noroot banner: $NBANNER"
                 NREL=$(printf '%s\n' "$NBANNER" | sed -E 's/^Linux version ([^ ]+).*/\1/')
+                NP_TIME=$(printf '%s\n' "$NBANNER" | sed -nE 's/.*\) (# [0-9]+ .*)$/\1/p')
+                NP_TC=$(printf '%s\n' "$NBANNER" | sed -nE 's/^Linux version [^ ]+ \([^)]*\) \((.*)\) # [0-9]+ .*$/\1/p')
+                [ -n "$NP_TIME" ] && NBLDTIME="$NP_TIME"
+                [ -n "$NP_TC" ] && NTOOLCHAIN="$NP_TC"
               fi
             else
-              echo "::warning::could not decompress noroot Image for banner, falling back to artifact name"
+              echo "::warning::could not decompress noroot Image for banner, falling back to artifact name / run time"
             fi
             {
               echo "NKREL=${NREL}"
               echo "NSHORT=$(printf '%s' "$NREL" | cut -d- -f1)"
+              echo "NBLDTIME=${NBLDTIME}"
+              echo "NTOOLCHAIN=${NTOOLCHAIN}"
             } >> "$GITHUB_ENV"
           fi
 
@@ -282,9 +341,17 @@ jobs:
           # 说明模板按实际收集到的资产生成：两种内核各一条 + 实际附带的管理器
           NOTES="$RUNNER_TEMP/notes.md"
           {
-            printf '内核版本：%s\n' "$KREL"
-            printf '构建时间：%s\n' "$BLDTIME"
-            printf '构建工具链：%s\n' "$TOOLCHAIN"
+            printf '内核版本（带 root）：%s\n' "$KREL"
+            printf '构建时间（带 root）：%s\n' "$BLDTIME"
+            printf '构建工具链（带 root）：%s\n' "$TOOLCHAIN"
+            if [ -n "${NSHORT:-}" ]; then
+              printf '\n内核版本（无 root）：%s\n' "$NKREL"
+              printf '构建时间（无 root）：%s\n' "${NBLDTIME:-}"
+              printf '构建工具链（无 root）：%s\n' "${NTOOLCHAIN:-}"
+              if [ "$NSHORT" != "$SHORT" ]; then
+                printf '⚠ 无 root 内核与带 root 内核版本不一致，刷入前请确认。\n'
+              fi
+            fi
             printf '\n'
             if [ -n "${NSHORT:-}" ]; then
               printf '## 下载说明（两种内核二选一刷入）\n\n'
