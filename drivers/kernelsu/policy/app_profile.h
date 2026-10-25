@@ -10,6 +10,8 @@ int escape_with_root_profile(void);
 
 int escape_to_root_for_init(void);
 
+void __init ksu_app_profile_init(void);
+
 void escape_to_root_for_cmd_su(uid_t target_uid, pid_t target_pid);
 
 #endif

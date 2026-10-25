@@ -1,8 +1,8 @@
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index c6ee4aa..cd380c4 100644
+index c6ee4aa..ffc2e19 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -6,21 +6,10 @@ kernelsu-objs += feature/mount_hide.o
+@@ -6,21 +6,14 @@ kernelsu-objs += feature/mount_hide.o
  kernelsu-objs += feature/sulog.o
  kernelsu-objs += feature/sucompat.o
  
@@ -12,8 +12,12 @@ index c6ee4aa..cd380c4 100644
 -kernelsu-objs += hook/syscall_hook_manager.o
 -kernelsu-objs += hook/tp_marker.o
 -ifeq ($(CONFIG_ARM64),y)
-+# mount_hide (v4.2.1-r1) patches file_operations pointers through the
-+# arm64 text-patching helper; it does not touch the syscall table.
++# Bridge: the inline syscall-hook architecture (lsm_hook, tp_marker,
++# syscall_event_bridge, syscall_hook_manager, per-arch syscall_hook and
++# non-arm64 patch_memory) is not compiled; hook_stub.o provides no-op
++# entry points so upstream call sites stay untouched. arm64 patch_memory
++# stays compiled: mount_hide patches file_operations pointers with it.
++kernelsu-objs += hook/hook_stub.o
  kernelsu-objs += hook/arm64/patch_memory.o
 -kernelsu-objs += hook/arm64/syscall_hook.o
 -else ifeq ($(CONFIG_X86_64),y)
@@ -26,17 +30,7 @@ index c6ee4aa..cd380c4 100644
  
  kernelsu-objs += infra/file_wrapper.o
  kernelsu-objs += infra/event_queue.o
-@@ -77,9 +66,6 @@ endif
- ifeq ($(CONFIG_KSU_DEBUG),y)
- ccflags-y += -DCONFIG_KSU_DEBUG=1
- endif
--ifeq ($(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER),y)
--ccflags-y += -DCONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=1
--endif
- endif
- 
- obj-$(CONFIG_KPM) += extension/kpm/kpm.o
-@@ -109,40 +95,11 @@ endif
+@@ -109,40 +102,11 @@ endif
  
  ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
  
@@ -82,25 +76,13 @@ index c6ee4aa..cd380c4 100644
  obj-$(CONFIG_KSU) += kernelsu.o
  
 diff --git a/kernel/Kconfig b/kernel/Kconfig
-index e84cffc..e375894 100644
+index e84cffc..9251818 100644
 --- a/kernel/Kconfig
 +++ b/kernel/Kconfig
-@@ -2,7 +2,6 @@ menu "KernelSU"
+@@ -61,4 +61,97 @@ config KSU_X86_PATCH_SYSCALL_DISPATCHER
+ 	  Dynamically patch x64's hardened syscall dispatcher to support syscall hooks. This is a
+ 	  replacement for a kernel source code patch, and is useful for x86_64 LKM mode.
  
- config KSU
- 	tristate "KernelSU function support"
--	depends on KPROBES && EXT4_FS
- 	default y
- 	help
- 	  Enable kernel-level root privileges on Android System.
-@@ -53,12 +52,98 @@ config KSU_DISABLE_POLICY
- 	  Escalation will always use the default full root profile, and
- 	  non-root handling will follow the global umount policy only.
- 
--config KSU_X86_PATCH_SYSCALL_DISPATCHER
--	bool "Dynamically patch x64's hardened syscall dispatcher to support syscall hooks"
--	depends on KSU && X86_64
--	default n
 +menu "KernelSU - SUSFS"
 +config KSU_SUSFS
 +	bool "KernelSU addon - SUSFS"
@@ -166,9 +148,7 @@ index e84cffc..e375894 100644
 +	bool "Enable to spoof /proc/bootconfig (gki) or /proc/cmdline (non-gki)"
 +	depends on KSU_SUSFS
 +	default y
- 	help
--	  Dynamically patch x64's hardened syscall dispatcher to support syscall hooks. This is a
--	  replacement for a kernel source code patch, and is useful for x86_64 LKM mode.
++	help
 +	  - Spoof the output of /proc/bootconfig (gki) or /proc/cmdline (non-gki) with a user-defined file.
 +	  - Effective on all processes.
 +
@@ -196,7 +176,6 @@ index e84cffc..e375894 100644
 +	    and with (uid % 100000) >= 10000.
 +
 +endmenu
- 
  endmenu
 diff --git a/kernel/Makefile b/kernel/Makefile
 index 05888d7..208e7f0 100644
@@ -218,224 +197,40 @@ index 05888d7..208e7f0 100644
 +
  # Keep a new line here!! Because someone may append config
 diff --git a/kernel/core/init.c b/kernel/core/init.c
-index a603f2c..e90e9de 100644
+index a603f2c..f5bd470 100644
 --- a/kernel/core/init.c
 +++ b/kernel/core/init.c
-@@ -6,6 +6,7 @@
- #include <linux/sched.h>
- #include <linux/workqueue.h>
- #include <linux/moduleparam.h>
-+#include <linux/susfs.h>
- 
- #include "policy/allowlist.h"
- #include "policy/app_profile.h"
-@@ -13,8 +14,6 @@
- #include "klog.h" // IWYU pragma: keep
- #include "manager/manager_observer.h"
- #include "manager/throne_tracker.h"
--#include "hook/syscall_hook_manager.h"
--#include "hook/lsm_hook.h"
- #include "runtime/ksud.h"
- #include "runtime/ksud_boot.h"
- #include "feature/sulog.h"
-@@ -22,25 +21,18 @@
- #include "ksu.h"
- #include "infra/file_wrapper.h"
- #include "selinux/selinux.h"
--#include "hook/syscall_hook.h"
- #include "feature/adb_root.h"
- #include "feature/selinux_hide.h"
- #include "feature/avc_spoof.h"
- #include "feature/uts_spoof.h"
- #include "feature/shell_su_adb_only.h"
-+#include "hook/setuid_hook.h"
-+#include "feature/sucompat.h"
- #include "feature/module_blacklist.h"
+@@ -32,6 +32,9 @@
  #include "infra/symbol_resolver.h"
  #include "preinit/preinit.h"
  #include "extension/extension.h"
++#include <linux/susfs.h>
++#include "hook/setuid_hook.h"
++#include "feature/sucompat.h"
  
--#if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
--#include <asm/cpufeature.h>
--#include <linux/version.h>
--#ifndef X86_FEATURE_INDIRECT_SAFE
--#error "FATAL: Your kernel is missing the indirect syscall bypass patches!"
--#endif
--#endif
--
- // workaround for A12-5.10 kernel
- // Some third-party kernel (e.g. linegaeOS) uses wrong toolchain, which supports
- // CC_HAVE_STACKPROTECTOR_SYSREG while gki's toolchain doesn't.
-@@ -77,7 +69,6 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
- #endif
- 
- struct cred *ksu_cred;
--bool ksu_late_loaded;
- 
- #ifdef CONFIG_KSU_DEBUG
- bool allow_shell = true;
-@@ -89,10 +80,6 @@ module_param(allow_shell, bool, 0);
- bool ksu_no_custom_rc = false;
- module_param_named(norc, ksu_no_custom_rc, bool, 0);
- 
--#ifdef MODULE
--bool ksu_bundled = false;
--module_param_named(bundled, ksu_bundled, bool, 0);
--#endif
- 
- static char *spoof_release = NULL;
- module_param(spoof_release, charp, 0);
-@@ -103,35 +90,12 @@ module_param(spoof_version, charp, 0);
- int __init kernelsu_init(void)
- {
-     pr_info("welcome to KernelSU version " __stringify(KERNEL_SU_VERSION) ", package name " KSU_PACKAGE_NAME "\n");
--#if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
--    // If the kernel has the hardening patch, X86_FEATURE_INDIRECT_SAFE must be set
--    if (!boot_cpu_has(X86_FEATURE_INDIRECT_SAFE)) {
--        pr_alert("*************************************************************");
--        pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
--        pr_alert("**                                                         **");
--        pr_alert("**        X86_FEATURE_INDIRECT_SAFE is not enabled!        **");
--        pr_alert("**      KernelSU will abort initialization to prevent      **");
--        pr_alert("**                     kernel panic.                       **");
--        pr_alert("**                                                         **");
--        pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
--        pr_alert("*************************************************************");
--        return -ENOSYS;
--    }
--#endif
--
--#ifdef MODULE
--    ksu_late_loaded = (current->pid != 1);
--#else
--    ksu_late_loaded = false;
--#endif
- 
- #ifdef CONFIG_KSU_DEBUG
-     pr_alert("*************************************************************");
--    pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
-     pr_alert("**                                                         **");
-     pr_alert("**         You are running KernelSU in DEBUG mode          **");
-     pr_alert("**                                                         **");
--    pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
-     pr_alert("*************************************************************");
- #endif
-     if (allow_shell) {
-@@ -150,88 +114,45 @@ int __init kernelsu_init(void)
+ #if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
+ #include <asm/cpufeature.h>
+@@ -150,6 +153,9 @@ int __init kernelsu_init(void)
          ksu_spoof_version(spoof_release, spoof_version);
      }
  
--    ksu_syscall_hook_init();
 +#ifdef CONFIG_KSU_SUSFS
 +    susfs_init();
 +#endif
+     ksu_syscall_hook_init();
  
      ksu_feature_init();
-     ksu_sulog_init();
-     ksu_adb_root_init();
--    ksu_lsm_hook_init();
-     ksu_selinux_hide_init();
-     ksu_avc_spoof_init();
-     ksu_shell_su_adb_only_init();
+@@ -211,6 +217,10 @@ int __init kernelsu_init(void)
+         ksu_preinit_init();
  
-     ksu_supercalls_init();
--    ksu_app_profile_init();
+         ksu_file_wrapper_init();
 +
-     ksu_extension_init();
-     ksu_extension_register_all();
- 
--    if (ksu_late_loaded) {
--        pr_info("late load mode, skipping kprobe hooks\n");
--
--        apply_kernelsu_rules();
--        cache_sid();
--        setup_ksu_cred();
--
--        // Grant current process (ksud late-load) root
--        // with KSU SELinux domain before enforcing SELinux, so it
--        // can continue to access /data/app etc. after enforcement.
--        escape_to_root_for_init();
-+    ksu_sucompat_init();
- 
--        ksu_allowlist_init();
--        ksu_load_allow_list();
--        ksu_dynamic_manager_load();
-+    ksu_setuid_hook_init();
- 
--        ksu_syscall_hook_manager_init();
-+    ksu_allowlist_init();
- 
--        ksu_throne_tracker_init();
--        ksu_observer_init();
--        ksu_file_wrapper_init();
-+    ksu_throne_tracker_init();
- 
--        ksu_boot_completed = true;
--        track_throne(false);
-+    ksu_ksud_init();
- 
--        ksu_avc_spoof_late_init();
--        ksu_feature_apply_forced();
--        ksu_extension_apply_forced();
-+    ksu_preinit_init();
- 
--        if (!getenforce()) {
--            pr_info("Permissive SELinux, enforcing\n");
--            setenforce(true);
--        }
-+    ksu_file_wrapper_init();
- 
--    } else {
--        ksu_syscall_hook_manager_init();
--
--        ksu_allowlist_init();
--
--        ksu_throne_tracker_init();
--
--        ksu_ksud_init();
--
--        ksu_preinit_init();
--
--        ksu_file_wrapper_init();
--    }
--
--#ifdef MODULE
--#ifndef CONFIG_KSU_DEBUG
--    kobject_del(&THIS_MODULE->mkobj.kobj);
--#endif
--#endif
-     return 0;
- }
- 
- void __exit kernelsu_exit(void)
- {
--    // Phase 1: Stop all hooks first to prevent new callbacks
--    ksu_syscall_hook_manager_exit();
--
-     ksu_supercalls_exit();
- 
--    if (!ksu_late_loaded) {
--        ksu_ksud_exit();
--        ksu_preinit_exit();
--    }
-+    ksu_ksud_exit();
-+    ksu_preinit_exit();
- 
-     // Wait for any in-flight RCU readers (e.g. handler traversing allow_list)
-     synchronize_rcu();
-@@ -244,9 +165,11 @@ void __exit kernelsu_exit(void)
-     ksu_allowlist_exit();
- 
-     ksu_shell_su_adb_only_exit();
++        ksu_sucompat_init();
 +
-     ksu_avc_spoof_exit();
-+
-     ksu_selinux_hide_exit();
--    ksu_lsm_hook_exit();
-+
-     ksu_adb_root_exit();
-     ksu_sulog_exit();
-     ksu_feature_exit();
++        ksu_setuid_hook_init();
+     }
+ 
+ #ifdef MODULE
 diff --git a/kernel/feature/adb_root.c b/kernel/feature/adb_root.c
 index 5945bd1..3535ab2 100644
 --- a/kernel/feature/adb_root.c
@@ -2526,22 +2321,6 @@ index 3a3dfea..b848623 100644
 -int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid);
 -
  #endif
-diff --git a/kernel/include/ksu.h b/kernel/include/ksu.h
-index 19ae932..cc03b10 100644
---- a/kernel/include/ksu.h
-+++ b/kernel/include/ksu.h
-@@ -8,11 +8,7 @@
- #define KERNEL_SU_VERSION KSU_VERSION
- 
- extern struct cred *ksu_cred;
--extern bool ksu_late_loaded;
- extern bool allow_shell;
--#ifdef MODULE
--extern bool ksu_bundled;
--#endif
- extern struct selinux_policy *backup_sepolicy;
- extern bool ksu_no_custom_rc;
- 
 diff --git a/kernel/policy/allowlist.c b/kernel/policy/allowlist.c
 index e5735d6..16a487b 100644
 --- a/kernel/policy/allowlist.c
@@ -2703,10 +2482,10 @@ index 01f13a2..11fdbc5 100644
 +    return 0;
  }
 diff --git a/kernel/policy/app_profile.h b/kernel/policy/app_profile.h
-index 4776099..93c930f 100644
+index 4776099..fb4ed08 100644
 --- a/kernel/policy/app_profile.h
 +++ b/kernel/policy/app_profile.h
-@@ -2,16 +2,13 @@
+@@ -2,14 +2,13 @@
  #define __KSU_H_APP_PROFILE
  
  #include "uapi/app_profile.h"
@@ -2718,11 +2497,9 @@ index 4776099..93c930f 100644
  int escape_with_root_profile(void);
  
 -void escape_to_root_for_init(void);
--
--void __init ksu_app_profile_init(void);
 +int escape_to_root_for_init(void);
  
- void escape_to_root_for_cmd_su(uid_t target_uid, pid_t target_pid);
+ void __init ksu_app_profile_init(void);
  
 diff --git a/kernel/policy/feature.h b/kernel/policy/feature.h
 index e393607..50d1891 100644
@@ -3503,7 +3280,7 @@ index 635ec01..c7b28b8 100644
  int ksu_sulog_emit_grant_root(int retval, __u32 uid, __u32 euid, gfp_t gfp);
  
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index 35d0f6b..6a40ca9 100644
+index 35d0f6b..50f12a8 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
 @@ -8,6 +8,8 @@
@@ -3515,86 +3292,15 @@ index 35d0f6b..6a40ca9 100644
  #include "uapi/supercall.h"
  #include "supercall/internal.h"
  #include "arch.h" // IWYU pragma: keep
-@@ -21,7 +23,6 @@
- #include "extension/dynamic_manager.h"
- #include "selinux/selinux.h"
- #include "infra/file_wrapper.h"
--#include "hook/tp_marker.h"
- #include "policy/app_profile.h"
- #include "sulog/event.h"
- #include "sulog/fd.h"
-@@ -53,21 +54,11 @@ static int do_get_info(void __user *arg)
- 
- #ifdef MODULE
-     cmd.flags |= KSU_GET_INFO_FLAG_LKM;
--    if (ksu_bundled) {
--        cmd.flags |= KSU_GET_INFO_FLAG_BUNDLED;
--    }
- #endif
- 
-     if (is_manager()) {
-         cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
-     }
--    if (ksu_late_loaded) {
--        cmd.flags |= KSU_GET_INFO_FLAG_LATE_LOAD;
--    }
--    // A late load never sees PID 1's selinux_setup, so preinit cannot run.
--    if (ksu_preinit_enabled_param() && !ksu_late_loaded) {
--        cmd.flags |= KSU_GET_INFO_FLAG_PREINIT;
--    }
- #if KSU_IS_PR_BUILD
-     cmd.flags |= KSU_GET_INFO_FLAG_PR_BUILD;
- #endif
-@@ -88,17 +79,11 @@ static int do_get_info_legacy(void __user *arg)
- 
- #ifdef MODULE
-     cmd.flags |= KSU_GET_INFO_FLAG_LKM;
--    if (ksu_bundled) {
--        cmd.flags |= KSU_GET_INFO_FLAG_BUNDLED;
--    }
- #endif
- 
-     if (is_manager()) {
-         cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
-     }
--    if (ksu_late_loaded) {
--        cmd.flags |= KSU_GET_INFO_FLAG_LATE_LOAD;
--    }
- #if KSU_IS_PR_BUILD
-     cmd.flags |= KSU_GET_INFO_FLAG_PR_BUILD;
- #endif
-@@ -129,12 +114,8 @@ static int do_report_event(void __user *arg)
-         services_started = false;
-         if (!post_fs_data_lock) {
-             post_fs_data_lock = true;
--            if (ksu_late_loaded) {
--                pr_info("post-fs-data skipped (late load)\n");
--            } else {
--                pr_info("post-fs-data triggered\n");
--                on_post_fs_data();
--            }
-+            pr_info("post-fs-data triggered\n");
-+            on_post_fs_data();
+@@ -147,6 +149,7 @@ static int do_report_event(void __user *arg)
+             } else {
+                 pr_info("boot_complete triggered\n");
+                 on_boot_completed();
++                susfs_start_sdcard_monitor_fn();
+             }
          }
          break;
-     }
-@@ -142,12 +123,9 @@ static int do_report_event(void __user *arg)
-         static bool boot_complete_lock = false;
-         if (!boot_complete_lock) {
-             boot_complete_lock = true;
--            if (ksu_late_loaded) {
--                pr_info("boot_complete skipped (late load)\n");
--            } else {
--                pr_info("boot_complete triggered\n");
--                on_boot_completed();
--            }
-+            pr_info("boot_complete triggered\n");
-+            on_boot_completed();
-+            susfs_start_sdcard_monitor_fn();
-         }
-         break;
-     }
-@@ -401,7 +379,6 @@ static int do_set_app_profile(void __user *arg)
+@@ -401,7 +404,6 @@ static int do_set_app_profile(void __user *arg)
      ret = ksu_set_app_profile(&cmd.profile);
      if (!ret) {
          ksu_persistent_allow_list();
@@ -3602,7 +3308,7 @@ index 35d0f6b..6a40ca9 100644
      }
      return ret;
  }
-@@ -484,49 +461,32 @@ static int do_manage_mark(void __user *arg)
+@@ -484,49 +486,32 @@ static int do_manage_mark(void __user *arg)
      }
  
      switch (cmd.operation) {
@@ -3673,7 +3379,7 @@ index 35d0f6b..6a40ca9 100644
      }
      if (copy_to_user(arg, &cmd, sizeof(cmd))) {
          pr_err("manage_mark: copy_to_user failed\n");
-@@ -536,6 +496,87 @@ static int do_manage_mark(void __user *arg)
+@@ -536,6 +521,87 @@ static int do_manage_mark(void __user *arg)
      return 0;
  }
  

@@ -7,8 +7,12 @@ kernelsu-objs += feature/sulog.o
 kernelsu-objs += feature/sucompat.o
 
 kernelsu-objs += hook/setuid_hook.o
-# mount_hide (v4.2.1-r1) patches file_operations pointers through the
-# arm64 text-patching helper; it does not touch the syscall table.
+# Bridge: the inline syscall-hook architecture (lsm_hook, tp_marker,
+# syscall_event_bridge, syscall_hook_manager, per-arch syscall_hook and
+# non-arm64 patch_memory) is not compiled; hook_stub.o provides no-op
+# entry points so upstream call sites stay untouched. arm64 patch_memory
+# stays compiled: mount_hide patches file_operations pointers with it.
+kernelsu-objs += hook/hook_stub.o
 kernelsu-objs += hook/arm64/patch_memory.o
 
 kernelsu-objs += infra/file_wrapper.o
@@ -65,6 +69,9 @@ ccflags-y += -DCONFIG_KSU_DISABLE_POLICY=1
 endif
 ifeq ($(CONFIG_KSU_DEBUG),y)
 ccflags-y += -DCONFIG_KSU_DEBUG=1
+endif
+ifeq ($(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER),y)
+ccflags-y += -DCONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=1
 endif
 endif
 
