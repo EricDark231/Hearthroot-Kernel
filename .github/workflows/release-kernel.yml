@@ -145,6 +145,9 @@ jobs:
           # manager artifact 里装的也是伪装版，artifact 名判断不出内容）。缺的变体从
           # 锚定 release 现取：锚 tag 与 count 均取自被发布 commit（HEAD_SHA），保证
           # 管理器与内核内建模块配对；标准版缺失视为错误，伪装版缺失降级
+          # 两个变体目录先建齐：旧构建 run 只下了 manager artifact 时 dl/spoof 不存在，
+          # find 对不存在路径返回非零，pipefail + set -e 下会直接炸掉步骤
+          mkdir -p "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof"
           N_PLAIN=$(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' ! -name '*spoofed*' 2>/dev/null | wc -l)
           N_SPOOF=$(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' -name '*spoofed*' 2>/dev/null | wc -l)
           if [ "$N_PLAIN" -eq 0 ] || [ "$N_SPOOF" -eq 0 ]; then
@@ -155,7 +158,6 @@ jobs:
               SU_REL=$(gh api "repos/${SUKISU_REPO}/releases/tags/${SU_TAG}") || { echo "::error::anchored release ${SU_TAG} not found on ${SUKISU_REPO}"; exit 1; }
               [ "$(echo "$SU_REL" | jq -r .prerelease)" = "false" ] || { echo "::error::${SU_TAG} is a prerelease"; exit 1; }
               SU_PINNED=$(git show "${HEAD_SHA}:drivers/kernelsu/Kbuild" 2>/dev/null | grep -E '^git_commit_count = [0-9]+$' | awk '{print $3}' || true)
-              mkdir -p "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof"
               if [ "$N_PLAIN" -eq 0 ]; then
                 SU_PLAIN=$(echo "$SU_REL" | jq -r '.assets[].name' | grep -E '^SukiSU_.*\.apk$' | grep -v spoofed | head -n1 || true)
                 [ -n "$SU_PLAIN" ] || { echo "::error::no standard manager APK asset on release ${SU_TAG}"; exit 1; }
