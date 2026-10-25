@@ -5,7 +5,8 @@ name: build-kernel
 #   -> AnyKernel3 可刷包（内核 blob 命名为 Image，内容为 lz4 legacy 格式，
 #      设备启动时只认名为 Image 的 blob）
 #   + 与 drivers/kernelsu/.sukisu_tag 锚定的 SukiSU-Ultra release 配套管理器
-#     （直接取该 release 的资产 APK，资产名里的 count 与 Kbuild 钉版交叉核对）
+#     （标准版 + 伪装版各取一个资产 APK，资产名里的 count 与 Kbuild 钉版交叉核对；
+#      伪装版缺失时降级为仅标准版）
 
 on:
   workflow_dispatch:
@@ -130,7 +131,8 @@ jobs:
           sed -i "s|^kernel.string=.*|kernel.string=Rodin ${KERNEL_RELEASE} (SukiSU-Ultra)|" AnyKernel3/anykernel.sh
           # 不再打包外层 zip：artifact 下载下来本身就是可刷的 AK3 zip
 
-      - name: Fetch SukiSU-Ultra manager APK for the anchored release
+      - name: Fetch SukiSU-Ultra manager APKs for the anchored release
+        id: fetch_manager
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -143,22 +145,36 @@ jobs:
           fi
           REL=$(gh api "repos/$SUKISU_REPO/releases/tags/$TAG")
           [ "$(echo "$REL" | jq -r .prerelease)" = "false" ] || { echo "::error::$TAG is a prerelease"; exit 1; }
-          ASSET_NAME=$(echo "$REL" | jq -r '.assets[].name' | grep '^SukiSU_.*\.apk$' | head -n1)
-          ASSET_URL=$(echo "$REL" | jq -r --arg n "$ASSET_NAME" '.assets[] | select(.name==$n) | .browser_download_url')
-          [ -n "$ASSET_NAME" ] && [ -n "$ASSET_URL" ] || { echo "::error::no manager APK asset on release $TAG"; exit 1; }
-          # 管理器与落地模块交叉核对：release 资产名里的 count 必须等于 Kbuild 钉的 count
-          REL_COUNT=$(echo "$ASSET_NAME" | sed -n 's/^SukiSU_v[0-9.]*_\([0-9]*\).*\.apk$/\1/p')
+          # 标准/伪装两版资产名只差 -spoofed 后缀且伪装版字典序在前，
+          # 必须按后缀分别挑选：统一 head -n1 会恒选中伪装版、标准版永不入库
+          PLAIN_NAME=$(echo "$REL" | jq -r '.assets[].name' | grep -E '^SukiSU_.*\.apk$' | grep -v spoofed | head -n1 || true)
+          SPOOF_NAME=$(echo "$REL" | jq -r '.assets[].name' | grep -E '^SukiSU_.*-spoofed\.apk$' | head -n1 || true)
+          [ -n "$PLAIN_NAME" ] || { echo "::error::no standard manager APK asset on release $TAG"; exit 1; }
           PINNED=$(grep -E '^git_commit_count = [0-9]+$' drivers/kernelsu/Kbuild | awk '{print $3}')
-          if [ -n "$REL_COUNT" ] && [ -n "$PINNED" ] && [ "$REL_COUNT" != "$PINNED" ]; then
-            echo "::error::release $TAG count $REL_COUNT != pinned Kbuild count $PINNED - module/manager pairing mismatch"
-            exit 1
+          # 管理器与落地模块交叉核对：release 资产名里的 count 必须等于 Kbuild 钉的 count
+          for name in "$PLAIN_NAME" ${SPOOF_NAME:+"$SPOOF_NAME"}; do
+            # [^_]* 兼容 v4.2.1-r2 这类带 -rN 后缀的版本段，否则 count 恒为空、核对静默失效
+            REL_COUNT=$(echo "$name" | sed -n 's/^SukiSU_v[^_]*_\([0-9]*\).*\.apk$/\1/p')
+            if [ -n "$REL_COUNT" ] && [ -n "$PINNED" ] && [ "$REL_COUNT" != "$PINNED" ]; then
+              echo "::error::$name: release $TAG count $REL_COUNT != pinned Kbuild count $PINNED - module/manager pairing mismatch"
+              exit 1
+            fi
+          done
+          rm -rf manager manager-spoofed && mkdir -p manager manager-spoofed
+          curl -fL --retry 3 --connect-timeout 30 "$(echo "$REL" | jq -r --arg n "$PLAIN_NAME" '.assets[] | select(.name==$n) | .browser_download_url')" -o "manager/$PLAIN_NAME"
+          [ "$(stat -c%s "manager/$PLAIN_NAME")" -gt 1000000 ] || { echo "::error::standard manager APK looks too small"; exit 1; }
+          HAS_SPOOF=no
+          if [ -n "$SPOOF_NAME" ]; then
+            curl -fL --retry 3 --connect-timeout 30 "$(echo "$REL" | jq -r --arg n "$SPOOF_NAME" '.assets[] | select(.name==$n) | .browser_download_url')" -o "manager-spoofed/$SPOOF_NAME"
+            [ "$(stat -c%s "manager-spoofed/$SPOOF_NAME")" -gt 1000000 ] || { echo "::error::spoofed manager APK looks too small"; exit 1; }
+            HAS_SPOOF=yes
+          else
+            echo "::warning::release $TAG has no spoofed manager asset - shipping standard manager only"
           fi
-          rm -rf manager && mkdir -p manager
-          curl -fL --retry 3 --connect-timeout 30 "$ASSET_URL" -o "manager/$ASSET_NAME"
-          [ "$(stat -c%s "manager/$ASSET_NAME")" -gt 1000000 ] || { echo "::error::manager APK looks too small"; exit 1; }
           echo "SUKISU_RELEASE_URL=https://github.com/$SUKISU_REPO/releases/tag/$TAG" >> "$GITHUB_ENV"
-          echo "manager APK: $ASSET_NAME (release $TAG)"
-          ls -la manager
+          echo "has_spoofed=${HAS_SPOOF}" >> "$GITHUB_OUTPUT"
+          echo "manager APKs: ${PLAIN_NAME} + ${SPOOF_NAME:-<none>} (release $TAG)"
+          ls -la manager manager-spoofed
 
       - name: Upload AnyKernel3 flashable zip
         uses: actions/upload-artifact@v4
@@ -169,11 +185,19 @@ jobs:
           path: AnyKernel3/**
           if-no-files-found: error
 
-      - name: Upload SukiSU-Ultra manager APK (release asset)
+      - name: Upload SukiSU-Ultra manager APK (standard)
         uses: actions/upload-artifact@v4
         with:
           name: rodin-${{ env.KERNEL_RELEASE }}-manager
           path: manager/*.apk
+          if-no-files-found: error
+
+      - name: Upload SukiSU-Ultra manager APK (spoofed)
+        if: steps.fetch_manager.outputs.has_spoofed == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rodin-${{ env.KERNEL_RELEASE }}-manager-spoofed
+          path: manager-spoofed/*.apk
           if-no-files-found: error
 
       - name: Build summary
@@ -183,5 +207,5 @@ jobs:
             echo "- kernel: \`${KERNEL_RELEASE}\` (Image.lz4 = lz4 legacy, magic 02214c18 verified)"
             echo "- build host: Kbuild@114514"
             echo "- AK3 flashable zip: artifact \`Rodin-${KERNEL_RELEASE}-AnyKernel3\` (downloaded zip is directly flashable, kernel blob Image = lz4 legacy)"
-            echo "- SukiSU-Ultra manager (release asset): artifact \`rodin-${KERNEL_RELEASE}-manager\` from [release]($SUKISU_RELEASE_URL)"
+            echo "- SukiSU-Ultra managers: artifacts \`rodin-${KERNEL_RELEASE}-manager\` + \`rodin-${KERNEL_RELEASE}-manager-spoofed\` (when available) from [release]($SUKISU_RELEASE_URL)"
           } >> "$GITHUB_STEP_SUMMARY"
