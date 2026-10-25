@@ -1,11 +1,16 @@
 name: release-kernel
 
 # 手动触发：取最近一次成功的 build-kernel 构建产物，发布 release（默认 prerelease）。
-# 正文格式对齐 v1.2（内核版本 / 构建时间 / 构建工具链 / 变更）：
+# 正文格式对齐 v1.3（内核版本 / 构建时间 / 构建工具链 / 下载说明 / 变更）：
 #   - 内核版本 / 构建时间 / 构建工具链 从 AK3 包内 Image 的 Linux banner 中提取，
 #     提取失败时回退到 artifact 名 / 构建记录时间
+#   - 下载说明按实际收集到的资产生成：带 root / 无 root 两种内核 + 标准 / 伪装两种管理器
 #   - 变更内容优先用手动输入的 Markdown，留空时按「上一个 tag..本次构建 commit」自动生成
-# 产物（assets）：AnyKernel3 可刷包 + ReSukiSU manager（release / spoofed，arm64-v8a）
+# 产物（assets）：
+#   - AnyKernel3_<ver>.zip：带 root 内核可刷包（取 KERNEL_BRANCH 最近一次成功构建）
+#   - AnyKernel3_<ver>_noroot.zip：无 root 内核可刷包（取 NOROOT_BRANCH 最近一次成功构建，
+#     include_noroot=false 时跳过）
+#   - SukiSU_v*_<count>-release[-spoofed].apk：标准 / 伪装管理器（构建 run 里有哪个带哪个）
 
 on:
   workflow_dispatch:
@@ -22,9 +27,13 @@ on:
         required: false
         default: ''
       run_id:
-        description: 'build-kernel 运行 ID（留空则取最近一次成功构建）'
+        description: 'build-kernel 运行 ID（留空则取最近一次成功构建，仅对带 root 内核生效）'
         required: false
         default: ''
+      include_noroot:
+        description: '是否附带无 root 内核 AK3（取 noroot 分支最近一次成功构建；false 只发带 root 内核）'
+        required: false
+        default: 'true'
       prerelease:
         description: '是否标记为 prerelease（true / false）'
         required: false
@@ -36,8 +45,8 @@ permissions:
 
 env:
   KERNEL_BRANCH: bsp-rodin-v-upstream
+  NOROOT_BRANCH: bsp-rodin-v-upstream-noroot
   BUILD_WORKFLOW: build-kernel.yml
-  RSU_REPO: ReSukiSU/ReSukiSU
 
 jobs:
   release:
@@ -51,26 +60,44 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Resolve latest successful build run
+      - name: Resolve latest successful build runs
         env:
           GH_TOKEN: ${{ github.token }}
           IN_RUN_ID: ${{ inputs.run_id }}
+          IN_INCLUDE_NOROOT: ${{ inputs.include_noroot }}
         run: |
           set -euo pipefail
           RUN_ID="${IN_RUN_ID}"
           if [ -z "$RUN_ID" ]; then
             RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${BUILD_WORKFLOW}/runs?branch=${KERNEL_BRANCH}&status=success&per_page=1" \
-                     --jq '.workflow_runs[0].id')
+                     --jq '.workflow_runs[0].id // empty')
           fi
           [ -n "$RUN_ID" ] || { echo "::error::no successful ${BUILD_WORKFLOW} run found on ${KERNEL_BRANCH}"; exit 1; }
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
             --jq '"build run: \(.id) (\(.display_title)) head=\(.head_sha) created=\(.created_at)"'
           HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.head_sha')
           CREATED_AT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.created_at')
+
+          # 无 root 内核：取 noroot 分支最近一次成功构建（workflow 文件同名，按 head_branch 过滤）
+          NOROOT_RUN_ID=""
+          if [ "${IN_INCLUDE_NOROOT:-true}" != "false" ]; then
+            NOROOT_RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${BUILD_WORKFLOW}/runs?branch=${NOROOT_BRANCH}&status=success&per_page=1" \
+                            --jq '.workflow_runs[0].id // empty' || true)
+            if [ -z "$NOROOT_RUN_ID" ]; then
+              echo "::error::no successful ${BUILD_WORKFLOW} run found on ${NOROOT_BRANCH} - dispatch build-kernel on ${NOROOT_BRANCH} first, or set include_noroot=false to publish the rooted kernel only"
+              exit 1
+            fi
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN_ID}" \
+              --jq '"noroot build run: \(.id) (\(.display_title)) head=\(.head_sha) created=\(.created_at)"'
+          else
+            echo "noroot kernel: skipped (include_noroot=false)"
+          fi
+
           {
             echo "RUN_ID=${RUN_ID}"
             echo "HEAD_SHA=${HEAD_SHA}"
             echo "RUN_CREATED_AT=${CREATED_AT}"
+            echo "NOROOT_RUN_ID=${NOROOT_RUN_ID}"
           } >> "$GITHUB_ENV"
 
       - name: Download build artifacts
@@ -109,9 +136,29 @@ jobs:
           done
           ls -la "$RUNNER_TEMP/dl/ak3" "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" 2>/dev/null || true
 
+          # 无 root 内核：noroot 分支构建的 artifact 同名规则（Rodin-<krel>-AnyKernel3），
+          # zip 本身即可刷包
+          NOROOT_AK3_NAME=""
+          if [ -n "${NOROOT_RUN_ID:-}" ]; then
+            NOROOT_AK3_ID=""
+            while IFS=$'\t' read -r id name; do
+              [ -n "$id" ] || continue
+              case "$name" in
+                *-AnyKernel3) NOROOT_AK3_ID="$id"; NOROOT_AK3_NAME="$name" ;;
+              esac
+            done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN_ID}/artifacts?per_page=100" \
+                     --jq '.artifacts[] | select(.expired==false) | "\(.id)\t\(.name)"')
+            [ -n "$NOROOT_AK3_ID" ] || { echo "::error::AnyKernel3 artifact not found in noroot run ${NOROOT_RUN_ID}"; exit 1; }
+            echo "AK3N  : ${NOROOT_AK3_NAME} (${NOROOT_AK3_ID})"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${NOROOT_AK3_ID}/zip" > "$RUNNER_TEMP/dl/ak3n.zip"
+            unzip -oq "$RUNNER_TEMP/dl/ak3n.zip" -d "$RUNNER_TEMP/dl/ak3n"
+            test -f "$RUNNER_TEMP/dl/ak3n/Image" || { echo "::error::Image blob missing in noroot AnyKernel3 artifact"; exit 1; }
+          fi
+
           {
             echo "AK3_PATH=${RUNNER_TEMP}/dl/ak3.zip"
             echo "AK3_NAME=${AK3_NAME}"
+            echo "AK3N_NAME=${NOROOT_AK3_NAME}"
           } >> "$GITHUB_ENV"
 
       - name: Extract kernel banner (version / build time / toolchain)
@@ -141,6 +188,26 @@ jobs:
           fi
           if [ -z "$BANNER_FOUND" ]; then
             echo "::warning::could not parse kernel banner from Image, falling back to artifact name / run time"
+          fi
+
+          # 无 root 内核 banner（与带 root 版分开提取，供下载说明标注版本是否一致）
+          if [ -n "${NOROOT_RUN_ID:-}" ]; then
+            NREL="${AK3N_NAME:-}"
+            NREL="${NREL#Rodin-}"
+            NREL="${NREL%-AnyKernel3}"
+            if lz4 -d -f "$RUNNER_TEMP/dl/ak3n/Image" "$RUNNER_TEMP/Image_noroot.raw" 2>/dev/null; then
+              NBANNER=$(strings -n 16 "$RUNNER_TEMP/Image_noroot.raw" | grep -m1 -E '^Linux version [^ ]+ \(' || true)
+              if [ -n "$NBANNER" ]; then
+                echo "noroot banner: $NBANNER"
+                NREL=$(printf '%s\n' "$NBANNER" | sed -E 's/^Linux version ([^ ]+).*/\1/')
+              fi
+            else
+              echo "::warning::could not decompress noroot Image for banner, falling back to artifact name"
+            fi
+            {
+              echo "NKREL=${NREL}"
+              echo "NSHORT=$(printf '%s' "$NREL" | cut -d- -f1)"
+            } >> "$GITHUB_ENV"
           fi
 
           SHORT="$(printf '%s' "$KREL" | cut -d- -f1)"
@@ -194,18 +261,6 @@ jobs:
             echo "::warning::secret GH_PAT not set, falling back to GITHUB_TOKEN"
             export GH_TOKEN="${GITHUB_TOKEN}"
           fi
-          NOTES="$RUNNER_TEMP/notes.md"
-          {
-            printf '内核版本：%s\n' "$KREL"
-            printf '构建时间：%s\n' "$BLDTIME"
-            printf '构建工具链：%s\n' "$TOOLCHAIN"
-            printf '\n'
-            printf '变更：\n'
-            cat "$RUNNER_TEMP/changes.md"
-          } > "$NOTES"
-          echo "----- release notes -----"
-          cat "$NOTES"
-
           if gh release view "$IN_TAG" >/dev/null 2>&1; then
             echo "::error::release ${IN_TAG} already exists"; exit 1
           fi
@@ -213,12 +268,53 @@ jobs:
           mkdir -p out
           cp "$RUNNER_TEMP/dl/ak3.zip" "out/AnyKernel3_${SHORT}.zip"
           ASSETS=("out/AnyKernel3_${SHORT}.zip")
+          if [ -n "${NSHORT:-}" ]; then
+            cp "$RUNNER_TEMP/dl/ak3n.zip" "out/AnyKernel3_${NSHORT}_noroot.zip"
+            ASSETS+=("out/AnyKernel3_${NSHORT}_noroot.zip")
+          fi
           while IFS= read -r apk; do
             [ -n "$apk" ] || continue
             cp "$apk" "out/$(basename "$apk")"
             ASSETS+=("out/$(basename "$apk")")
           done < <(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' 2>/dev/null | sort)
           ls -la out
+
+          # 说明模板按实际收集到的资产生成：两种内核各一条 + 实际附带的管理器
+          NOTES="$RUNNER_TEMP/notes.md"
+          {
+            printf '内核版本：%s\n' "$KREL"
+            printf '构建时间：%s\n' "$BLDTIME"
+            printf '构建工具链：%s\n' "$TOOLCHAIN"
+            printf '\n'
+            if [ -n "${NSHORT:-}" ]; then
+              printf '## 下载说明（两种内核二选一刷入）\n\n'
+            else
+              printf '## 下载说明\n\n'
+            fi
+            printf -- '- `AnyKernel3_%s.zip`：带 root 内核（内置 SukiSU-Ultra，配合管理器获取 root）\n' "$SHORT"
+            if [ -n "${NSHORT:-}" ]; then
+              if [ "$NSHORT" != "$SHORT" ]; then
+                printf -- '- `AnyKernel3_%s_noroot.zip`：无 root 纯净内核（不含 KernelSU；注意其内核版本为 %s，与带 root 版 %s 不一致）\n' "$NSHORT" "$NKREL" "$KREL"
+              else
+                printf -- '- `AnyKernel3_%s_noroot.zip`：无 root 纯净内核（不含 KernelSU，不需要 root 的场景使用）\n' "$NSHORT"
+              fi
+            fi
+            printf '\n管理器 apk 与带 root 内核配套（刷无 root 内核不需要管理器）：\n\n'
+            N_APK=0
+            for apk in out/*.apk; do
+              [ -e "$apk" ] || continue
+              N_APK=$((N_APK + 1))
+              case "$(basename "$apk")" in
+                *spoofed*) printf -- '- `%s`：伪装版管理器（包名伪装，便于隐藏 root）\n' "$(basename "$apk")" ;;
+                *)         printf -- '- `%s`：标准版管理器\n' "$(basename "$apk")" ;;
+              esac
+            done
+            [ "$N_APK" -gt 0 ] || printf -- '- （本次发布未附带管理器）\n'
+            printf '\n变更：\n'
+            cat "$RUNNER_TEMP/changes.md"
+          } > "$NOTES"
+          echo "----- release notes -----"
+          cat "$NOTES"
 
           EXTRA=()
           if [ "${IN_PRERELEASE}" != "false" ]; then
