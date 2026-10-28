@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - experiment/finasu
+      - recovery/finasu-v1.0.5-working
     paths:
       - '.github/workflows/test-finasu-build.yml'
       - 'drivers/kernelsu/**'
@@ -25,7 +25,7 @@ env:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/experiment/finasu'
+    if: github.ref == 'refs/heads/recovery/finasu-v1.0.5-working'
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
@@ -33,7 +33,7 @@ jobs:
       - name: Checkout experimental FinaSU branch
         uses: actions/checkout@v4
         with:
-          ref: experiment/finasu
+          ref: recovery/finasu-v1.0.5-working
           fetch-depth: 1
 
       - name: Free disk space
