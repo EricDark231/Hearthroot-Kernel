@@ -14,9 +14,10 @@ from the released tag:
 The count for a released tag is printed in the release asset name, e.g.
 SukiSU_v4.2.1_40994-release.apk -> count 40994.
 
-Anchors are exact against the landed v4.2.1 Kbuild; any upstream Kbuild
-restructure changes them and this script exits 2 so the calling workflow
-stops instead of shipping a broken pin.
+Anchors match the landed Kbuild shapes (the git_branch probe exists in
+both the $(shell ...) and the v4.3.0 $(if $(KSU_BUILD_REF),...) form); any
+further upstream Kbuild restructure breaks them and this script exits 2 so
+the calling workflow stops instead of shipping a broken pin.
 """
 import argparse
 import re
@@ -38,7 +39,7 @@ text = open(a.kbuild).read()
 SUBS = [
     (r"^git_short_sha    = \$\(shell .*$",
      f"git_short_sha    = {a.sha8}"),
-    (r"^git_branch       = \$\(shell .*$",
+    (r"^git_branch       = \$\((?:if|shell) .*$",
      f"git_branch       = {a.branch}"),
     (r"^git_commit_count = \$\(shell .*$",
      f"git_commit_count = {a.count}"),

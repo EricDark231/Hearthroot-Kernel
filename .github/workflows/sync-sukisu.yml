@@ -5,8 +5,12 @@ name: sync-sukisu
 # drivers/kernelsu.
 # Rules (per owner):
 #   - anchored by release tag, never by branch HEAD: no more per-commit chasing
-#   - the SUSFS bridge (.github/patches/10_enable_susfs_for_ksu-v4.2.1-r2.patch)
-#     must apply to the new tag, otherwise abort, push nothing, open an issue
+#   - the SUSFS bridge (newest .github/patches/10_enable_susfs_for_ksu-*.patch
+#     by version-sorted filename) must apply to the new tag, otherwise abort,
+#     push nothing, open an issue
+#   - the semantic layer (.github/patches/sukisu_override.list) is copied
+#     in-tree over the freshly cloned tag: upstream edits to those files can
+#     never conflict the bridge
 #   - SUSFS kernel-side files are never overwritten in-tree (bootstrap only)
 # NOTE: this workflow does NOT build-test the landed tree; build locally before
 # shipping a boot image.
@@ -35,7 +39,7 @@ env:
   SUKISU_REPO: SukiSU-Ultra/SukiSU-Ultra
   SUSFS_REPO_URL: https://github.com/omajili-manbu/susfs4ksu.git
   SUSFS_BRANCH: gki-android15-6.6-mod
-  BRIDGE_PATCH: .github/patches/10_enable_susfs_for_ksu-v4.2.1-r2.patch
+  SUKISU_OVERRIDE_LIST: .github/patches/sukisu_override.list
   ISSUE_TITLE: "[auto-sync] SukiSU-Ultra sync failed - manual attention needed"
 
 jobs:
@@ -102,11 +106,18 @@ jobs:
           echo "sukisu_sha=$SU_SHA" >> "$GITHUB_OUTPUT"
           echo "sukisu_count=$SU_COUNT" >> "$GITHUB_OUTPUT"
 
+          # Bridge patch: pick the newest by version-sorted filename (the
+          # filename carries the tag it was authored against).
+          BRIDGE_PATCH=$(ls "$GITHUB_WORKSPACE"/.github/patches/10_enable_susfs_for_ksu-*.patch | sort -V | tail -n1)
+          [ -n "$BRIDGE_PATCH" ] || { echo "::error::no 10_enable_susfs_for_ksu-*.patch found"; exit 1; }
+          echo "bridge patch: $BRIDGE_PATCH"
+          echo "bridge_patch=$BRIDGE_PATCH" >> "$GITHUB_OUTPUT"
+
           # SUSFS bridge, tri-state per owner rule: appliable -> apply;
           # net effect present -> skip; anything else -> abort (structural
           # surprise, push nothing, open an issue).
-          if git -C "$RUNNER_TEMP/sukisu" apply --check "$GITHUB_WORKSPACE/$BRIDGE_PATCH" 2>/tmp/bridge-err; then
-            git -C "$RUNNER_TEMP/sukisu" apply "$GITHUB_WORKSPACE/$BRIDGE_PATCH"
+          if git -C "$RUNNER_TEMP/sukisu" apply --check "$BRIDGE_PATCH" 2>/tmp/bridge-err; then
+            git -C "$RUNNER_TEMP/sukisu" apply "$BRIDGE_PATCH"
             echo "bridge patch applied to $TAG"
           elif grep -q 'menu "KernelSU - SUSFS"' "$RUNNER_TEMP/sukisu/kernel/Kconfig" \
                && grep -qw susfs_init "$RUNNER_TEMP/sukisu/kernel/core/init.c"; then
@@ -116,6 +127,23 @@ jobs:
             cp /tmp/bridge-err "$RUNNER_TEMP/bridge-conflict.log" 2>/dev/null || true
             exit 1
           fi
+
+          # Semantic layer: the override list is ours by definition - copy the
+          # in-tree SUSFS/adaptation files over the fresh tag so upstream edits
+          # to them can never conflict the bridge.
+          OV=0
+          while IFS= read -r line; do
+            F=${line%%#*}
+            F=$(echo "$F" | tr -d '[:space:]')
+            [ -z "$F" ] && continue
+            SRC="$GITHUB_WORKSPACE/drivers/kernelsu/$F"
+            DST="$RUNNER_TEMP/sukisu/kernel/$F"
+            [ -f "$SRC" ] || { echo "::error::override source missing in tree: drivers/kernelsu/$F"; exit 1; }
+            mkdir -p "$(dirname "$DST")"
+            cp "$SRC" "$DST"
+            OV=$((OV+1))
+          done < "$GITHUB_WORKSPACE/$SUKISU_OVERRIDE_LIST"
+          echo "override list applied: $OV files"
 
           # Bridge closure gate: every symbol the kernel tree's susfs hooks
           # call must exist in the bridged module BEFORE it lands.
@@ -241,6 +269,7 @@ jobs:
           grep -qE '^git_commit_count = [0-9]+$' drivers/kernelsu/Kbuild
           grep -q 'menu "KernelSU - SUSFS"' drivers/kernelsu/Kconfig
           grep -qw susfs_init drivers/kernelsu/core/init.c
+          test -f drivers/kernelsu/hook/hook_stub.c || { echo "::error::hook_stub.c missing after landing"; exit 1; }
           for d in arm64 riscv64 x86_64; do
             [ -d "drivers/kernelsu/hook/$d" ] || { echo "::error::missing drivers/kernelsu/hook/$d"; exit 1; }
           done
@@ -248,7 +277,7 @@ jobs:
           # kernel-tree -> module symbol closure (the anti-regression gate):
           # every ksu_handle_*/susfs_is_* call compiled into the kernel must be
           # backed by the landed module.
-          for sym in $(grep -rhoE 'ksu_handle_[a-z_0-9]*' fs/ drivers/input/input.c \
+          for sym in $(grep -rhoE '\bksu_[a-z_0-9]*' fs/ kernel/ security/ mm/ block/ drivers/input \
                          --include='*.c' | sort -u) susfs_is_current_ksu_domain susfs_is_current_init_domain; do
             grep -rqw "$sym" drivers/kernelsu --include='*.c' \
               || { echo "::error::kernel tree calls $sym but drivers/kernelsu does not define it"; exit 1; }
@@ -275,7 +304,7 @@ jobs:
             echo "drivers/kernelsu: sync SukiSU-Ultra to $TAG (release tag) and pin version $COUNT"
             echo ""
             echo "Re-land SukiSU-Ultra kernel module from release tag $TAG ($SHA on main)."
-            echo "SUSFS bridge $BRIDGE_PATCH applied to the landed module."
+            echo "SUSFS bridge ${{ steps.sukisu.outputs.bridge_patch }} applied to the landed module."
             echo "SUSFS kernel-side files preserved in-tree; patch source susfs4ksu $SUSFS_BRANCH (${{ steps.landing.outputs.susfs_sha }})."
             [ "${{ steps.landing.outputs.patch_applied }}" = "1" ] && echo "Kernel-side SUSFS patch(es) were missing and have been re-applied." || true
             echo ""
@@ -304,7 +333,7 @@ jobs:
             EXTRA=$'### SUSFS bridge apply log\n```\n'
             EXTRA+="$(head -100 "$RUNNER_TEMP/bridge-conflict.log")"
             EXTRA+=$'\n```\n'
-            EXTRA+=$'The bridge patch is version-specific (filename carries the tag it was authored against).\nUpdate it in-tree for the new tag, then re-run this workflow.\n'
+            EXTRA+=$'The bridge patch is version-specific (filename carries the tag it was authored against).\nUpdate it in-tree for the new tag, then re-run this workflow.\nKeep .github/patches/sukisu_override.list in lockstep (the patch must not touch override paths).\n'
           fi
           {
             echo "The [sync-sukisu run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) failed."

@@ -1,0 +1,29 @@
+# Semantic-layer override list (kernel/-relative paths).
+# sync-sukisu copies each file from the checked-out drivers/kernelsu/ over
+# the freshly cloned release tag after applying the bridge patch: these are
+# the in-tree SUSFS/adaptation files, they win over any upstream version, so
+# upstream edits to them can never conflict the bridge. Keep in lockstep with
+# the 10_enable_susfs_for_ksu-*.patch file (which must not touch these paths).
+feature/adb_root.c
+feature/adb_root.h
+feature/kernel_umount.c
+feature/selinux_hide.c
+feature/sucompat.c
+feature/sucompat.h
+hook/setuid_hook.c
+hook/setuid_hook.h
+hook/hook_stub.c
+policy/allowlist.c
+policy/app_profile.c
+policy/app_profile.h
+policy/feature.h
+runtime/boot_event.c
+runtime/ksud.h
+runtime/ksud_integration.c
+selinux/rules.c
+selinux/selinux.c
+selinux/selinux.h
+sulog/event.c
+sulog/event.h
+supercall/supercall.c
+supercall/supercall.h
