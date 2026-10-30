@@ -136,7 +136,10 @@ REPO_BRANCH := main
 VERSION_BASE    := 40000
 VERSION_OFFSET  := 2815
 
-# Vendored as an in-tree copy of SukiSU-Ultra v4.3.0 @ e67b14e6 (release tag v4.3.0, count 3916).
+# Vendored as an in-tree copy of SukiSU-Ultra v4.3.0 @ e67b14e6 (release tag v4.3.0, count 3915).
+# count = rev-list count of the release tag; the manager asset name carries the
+# formula value VERSION_BASE + count - VERSION_OFFSET (= 41100 for v4.3.0),
+# never the bare count - pair against the formula, not this line.
 # Do NOT restore the $(shell git/curl) probes below: this directory
 # lives inside the kernel git repository, so they would report the
 # kernel tree's sha/count and hit the network on every build.
@@ -149,7 +152,7 @@ KSU_SRC := $(if $(wildcard $(KSU_SRC)/../.git),$(KSU_SRC),$(MDIR))
 
 git_short_sha    = e67b14e6
 git_branch       = main
-git_commit_count = 3916
+git_commit_count = 3915
 git_latest_tag   = $(shell cd $(KSU_SRC) && $(GIT_BIN) describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 
 # vendored in-tree: no shallow fetch, no git query, no network query

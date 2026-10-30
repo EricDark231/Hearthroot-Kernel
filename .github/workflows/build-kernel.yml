@@ -5,8 +5,8 @@ name: build-kernel
 #   -> AnyKernel3 可刷包（内核 blob 命名为 Image，内容为 lz4 legacy 格式，
 #      设备启动时只认名为 Image 的 blob）
 #   + 与 drivers/kernelsu/.sukisu_tag 锚定的 SukiSU-Ultra release 配套管理器
-#     （标准版 + 伪装版各取一个资产 APK，资产名里的 count 与 Kbuild 钉版交叉核对；
-#      伪装版缺失时降级为仅标准版）
+#     （标准版 + 伪装版各取一个资产 APK，资产名里的公式版本值与 Kbuild 钉版
+#      按公式换算交叉核对；伪装版缺失时降级为仅标准版）
 
 on:
   workflow_dispatch:
@@ -150,13 +150,21 @@ jobs:
           PLAIN_NAME=$(echo "$REL" | jq -r '.assets[].name' | grep -E '^SukiSU_.*\.apk$' | grep -v spoofed | head -n1 || true)
           SPOOF_NAME=$(echo "$REL" | jq -r '.assets[].name' | grep -E '^SukiSU_.*-spoofed\.apk$' | head -n1 || true)
           [ -n "$PLAIN_NAME" ] || { echo "::error::no standard manager APK asset on release $TAG"; exit 1; }
-          PINNED=$(grep -E '^git_commit_count = [0-9]+$' drivers/kernelsu/Kbuild | awk '{print $3}')
-          # 管理器与落地模块交叉核对：release 资产名里的 count 必须等于 Kbuild 钉的 count
+          KSU_KBUILD=drivers/kernelsu/Kbuild
+          V_BASE=$(grep -E '^VERSION_BASE[[:space:]]+:=[[:space:]]+[0-9]+$' "$KSU_KBUILD" | awk '{print $3}')
+          V_OFFSET=$(grep -E '^VERSION_OFFSET[[:space:]]+:=[[:space:]]+[0-9]+$' "$KSU_KBUILD" | awk '{print $3}')
+          PINNED=$(grep -E '^git_commit_count = [0-9]+$' "$KSU_KBUILD" | awk '{print $3}')
+          # 管理器与落地模块交叉核对：资产名里的数字是官方公式值
+          # KSU_VERSION = VERSION_BASE + count - VERSION_OFFSET（与 manager 同源），
+          # 不是裸 commit count，须按 Kbuild 常量换算后再比
+          # （v4.3.0：40000 + 3915 - 2815 = 41100；裸 count 直接比对口径错位恒不等）
+          EXPECTED=$(( ${V_BASE:-0} + ${PINNED:-0} - ${V_OFFSET:-0} ))
           for name in "$PLAIN_NAME" ${SPOOF_NAME:+"$SPOOF_NAME"}; do
             # [^_]* 兼容 v4.2.1-r2 这类带 -rN 后缀的版本段，否则 count 恒为空、核对静默失效
             REL_COUNT=$(echo "$name" | sed -n 's/^SukiSU_v[^_]*_\([0-9]*\).*\.apk$/\1/p')
-            if [ -n "$REL_COUNT" ] && [ -n "$PINNED" ] && [ "$REL_COUNT" != "$PINNED" ]; then
-              echo "::error::$name: release $TAG count $REL_COUNT != pinned Kbuild count $PINNED - module/manager pairing mismatch"
+            if [ -n "$REL_COUNT" ] && [ -n "$PINNED" ] && [ -n "$V_BASE" ] && [ -n "$V_OFFSET" ] \
+               && [ "$REL_COUNT" != "$EXPECTED" ]; then
+              echo "::error::$name: release $TAG asset value $REL_COUNT != Kbuild formula $EXPECTED (base $V_BASE + count $PINNED - offset $V_OFFSET) - module/manager pairing mismatch"
               exit 1
             fi
           done
