@@ -37,6 +37,7 @@ kernelsu-objs += extension/extension.o
 kernelsu-objs += extension/cpu_spoof.o
 kernelsu-objs += extension/umount_paths.o
 kernelsu-objs += extension/susfs_extension.o
+kernelsu-objs += extension/version_spoof.o
 
 kernelsu-objs += runtime/boot_event.o
 kernelsu-objs += runtime/ksud_integration.o
@@ -61,6 +62,9 @@ kernelsu-objs += feature/uts_spoof.o
 kernelsu-objs += feature/avc_spoof.o
 
 ifdef KBUILD_EXTMOD
+ifeq ($(CONFIG_KPM),y)
+ccflags-y += -DCONFIG_KPM=1
+endif
 ifeq ($(CONFIG_KSU_DISABLE_MANAGER),y)
 ccflags-y += -DCONFIG_KSU_DISABLE_MANAGER=1
 endif
@@ -75,9 +79,22 @@ ccflags-y += -DCONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=1
 endif
 endif
 
-obj-$(CONFIG_KPM) += extension/kpm/kpm.o
-obj-$(CONFIG_KPM) += extension/kpm/compact.o
-obj-$(CONFIG_KPM) += extension/kpm/super_access.o
+ifeq ($(CONFIG_KPM),y)
+# These must be linked into kernelsu.ko too, not standalone obj-y objects.
+kernelsu-objs += extension/kpm/kpm.o
+kernelsu-objs += extension/kpm/compact.o
+kernelsu-objs += extension/kpm/super_access.o
+
+# Vendor backports may change these fields independently of LINUX_VERSION_CODE.
+# Inspect the actual target source header, not the host kernel or KMI label.
+ksu_netlink_cfg := $(shell sed -n '/struct netlink_kernel_cfg {/,/^};/p' $(srctree)/include/linux/netlink.h)
+ifneq ($(findstring cb_mutex,$(ksu_netlink_cfg)),)
+ccflags-y += -DKSU_NETLINK_CFG_HAS_CB_MUTEX=1
+endif
+ifneq ($(findstring compare,$(ksu_netlink_cfg)),)
+ccflags-y += -DKSU_NETLINK_CFG_HAS_COMPARE=1
+endif
+endif
 # kpm.c provides the extension glue (ksu_extension_kpm_*), referenced
 # unconditionally by extension/extension.c, so build it even when
 # CONFIG_KPM is off — its set/get/io become no-ops.
@@ -119,30 +136,30 @@ REPO_BRANCH := main
 VERSION_BASE    := 40000
 VERSION_OFFSET  := 2815
 
-# Vendored as an in-tree copy of SukiSU-Ultra v4.2.1-r2 @ d6b36700 (release tag v4.2.1-r2, count 41068).
+# Vendored as an in-tree copy of SukiSU-Ultra v4.3.0 @ e67b14e6 (release tag v4.3.0, count 3916).
 # Do NOT restore the $(shell git/curl) probes below: this directory
 # lives inside the kernel git repository, so they would report the
 # kernel tree's sha/count and hit the network on every build.
-# d6b36700
+# e67b14e6
 GIT_BIN  := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin git
 CURL_BIN := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin curl
 
 KSU_SRC := $(if $(filter $(srctree),$(src)),$(src),$(srctree)/$(src))
 KSU_SRC := $(if $(wildcard $(KSU_SRC)/../.git),$(KSU_SRC),$(MDIR))
 
-git_short_sha    = d6b36700
+git_short_sha    = e67b14e6
 git_branch       = main
-git_commit_count = 41068
+git_commit_count = 3916
 git_latest_tag   = $(shell cd $(KSU_SRC) && $(GIT_BIN) describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 
 # vendored in-tree: no shallow fetch, no git query, no network query
 
 GITHUB_API_BASE  := https://api.github.com/repos/$(REPO_OWNER)/$(REPO_NAME)
-KSU_GITHUB_VER   := 4.2.1-r2
+KSU_GITHUB_VER   := 4.3.0
 GITHUB_COMMITS   :=
 LOCAL_COUNT     := $(if $(GITHUB_COMMITS),$(GITHUB_COMMITS),$(git_commit_count))
-KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),41000)
-VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.2.1)
+KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),$(VERSION_BASE))
+VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.3.0)
 KSU_VERSION_FULL := $(if $(call git_short_sha),v$(VERSION_TAG)-$(call git_short_sha)@$(call git_branch),v$(VERSION_TAG)-$(REPO_NAME)-unknown@unknown)
 $(info -- $(REPO_NAME) version: $(KSU_VERSION) [$(KSU_VERSION_FULL)])
 

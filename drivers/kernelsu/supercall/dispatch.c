@@ -8,8 +8,6 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 #include <linux/thread_info.h>
-#include <linux/namei.h>
-#include <linux/susfs.h>
 #include "uapi/supercall.h"
 #include "supercall/internal.h"
 #include "arch.h" // IWYU pragma: keep
@@ -33,6 +31,8 @@
 #include "feature/uts_spoof.h"
 #include "extension/extension.h"
 #include "extension/umount_paths.h"
+#include "extension/version_spoof.h"
+#include <linux/susfs.h>
 
 static int do_grant_root(void __user *arg)
 {
@@ -75,6 +75,7 @@ static int do_get_info(void __user *arg)
 #endif
     cmd.features = KSU_FEATURE_MAX;
     cmd.uapi_version = KERNEL_SU_UAPI_VERSION;
+    ksu_version_spoof_apply_info(&cmd);
 
     if (copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("get_version: copy_to_user failed\n");
@@ -105,6 +106,8 @@ static int do_get_info_legacy(void __user *arg)
     cmd.flags |= KSU_GET_INFO_FLAG_PR_BUILD;
 #endif
     cmd.features = KSU_FEATURE_MAX;
+
+    ksu_version_spoof_apply_info_legacy(&cmd);
 
     if (copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("get_version: copy_to_user failed\n");
@@ -404,6 +407,7 @@ static int do_set_app_profile(void __user *arg)
     ret = ksu_set_app_profile(&cmd.profile);
     if (!ret) {
         ksu_persistent_allow_list();
+        ksu_mark_running_process();
     }
     return ret;
 }
@@ -486,32 +490,49 @@ static int do_manage_mark(void __user *arg)
     }
 
     switch (cmd.operation) {
-        case KSU_MARK_GET: {
-            if (susfs_is_current_proc_no_su()) {
-                ret = 0; // SYSCALL_TRACEPOINT is NOT flagged
-            } else {
-                ret = 1; // SYSCALL_TRACEPOINT is flagged
+    case KSU_MARK_GET: {
+        // Get task mark status
+        ret = ksu_get_task_mark(cmd.pid);
+        if (ret < 0) {
+            pr_err("manage_mark: get failed for pid %d: %d\n", cmd.pid, ret);
+            return ret;
+        }
+        cmd.result = (u32)ret;
+        break;
+    }
+    case KSU_MARK_MARK: {
+        if (cmd.pid == 0) {
+            ksu_mark_all_process();
+        } else {
+            ret = ksu_set_task_mark(cmd.pid, true);
+            if (ret < 0) {
+                pr_err("manage_mark: set_mark failed for pid %d: %d\n", cmd.pid, ret);
+                return ret;
             }
-            cmd.result = (u32)ret;
-            break;
         }
-        case KSU_MARK_MARK: {
-            if (cmd.pid != 0)
+        break;
+    }
+    case KSU_MARK_UNMARK: {
+        if (cmd.pid == 0) {
+            ksu_unmark_all_process();
+        } else {
+            ret = ksu_set_task_mark(cmd.pid, false);
+            if (ret < 0) {
+                pr_err("manage_mark: set_unmark failed for pid %d: %d\n", cmd.pid, ret);
                 return ret;
-            break;
+            }
         }
-        case KSU_MARK_UNMARK: {
-            if (cmd.pid != 0)
-                return ret;
-            break;
-        }
-        case KSU_MARK_REFRESH: {
-            break;
-        }
-        default: {
-            pr_err("manage_mark: invalid operation %u\n", cmd.operation);
-            return -EINVAL;
-        }
+        break;
+    }
+    case KSU_MARK_REFRESH: {
+        ksu_mark_running_process();
+        pr_info("manage_mark: refreshed running processes\n");
+        break;
+    }
+    default: {
+        pr_err("manage_mark: invalid operation %u\n", cmd.operation);
+        return -EINVAL;
+    }
     }
     if (copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("manage_mark: copy_to_user failed\n");
@@ -519,87 +540,6 @@ static int do_manage_mark(void __user *arg)
     }
 
     return 0;
-}
-
-int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
-{
-    if (magic1 != KSU_INSTALL_MAGIC1) {
-        return -EINVAL; 
-    }
-
-    // If magic2 is susfs and current process is root
-    if (magic2 == SUSFS_MAGIC && current_uid().val == 0) {
-        switch(cmd) {
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-            case CMD_SUSFS_ADD_SUS_PATH:
-                susfs_add_sus_path(arg);
-                return 0;
-            case CMD_SUSFS_ADD_SUS_PATH_LOOP:
-                susfs_add_sus_path_loop(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-            case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
-                susfs_set_hide_sus_mnts_for_non_su_procs(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-            case CMD_SUSFS_ADD_SUS_KSTAT:
-                susfs_add_sus_kstat(arg);
-                return 0;
-            case CMD_SUSFS_UPDATE_SUS_KSTAT:
-                susfs_update_sus_kstat(arg);
-                return 0;
-            case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
-                susfs_add_sus_kstat(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-            case CMD_SUSFS_SET_UNAME:
-                susfs_set_uname(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
-            case CMD_SUSFS_ENABLE_LOG:
-                susfs_enable_log(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
-#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-            case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
-                susfs_set_cmdline_or_bootconfig(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            case CMD_SUSFS_ADD_OPEN_REDIRECT:
-                susfs_add_open_redirect(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-#ifdef CONFIG_KSU_SUSFS_SUS_MAP
-            case CMD_SUSFS_ADD_SUS_MAP:
-                susfs_add_sus_map(arg);
-                return 0;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-            case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
-                susfs_set_avc_log_spoofing(arg);
-                return 0;
-            case CMD_SUSFS_SHOW_ENABLED_FEATURES:
-                susfs_get_enabled_features(arg);
-                return 0;
-            case CMD_SUSFS_SHOW_VARIANT:
-                susfs_show_variant(arg);
-                return 0;
-            case CMD_SUSFS_SHOW_VERSION:
-                susfs_show_version(arg);
-                return 0;
-            default:
-                return -EINVAL;
-        }
-    }
-
-    if (magic2 == KSU_INSTALL_MAGIC2)
-        return ksu_supercall_reboot_handler(arg);
-
-    return -EINVAL;
 }
 
 static int do_nuke_ext4_sysfs(void __user *arg)
@@ -797,6 +737,7 @@ static int do_get_full_version(void __user *arg)
     struct ksu_get_full_version_cmd cmd = { 0 };
 
     strscpy(cmd.version_full, KSU_VERSION_FULL, sizeof(cmd.version_full));
+    ksu_version_spoof_apply_full_version(cmd.version_full, sizeof(cmd.version_full));
 
     if (copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("get_full_version: copy_to_user failed\n");
@@ -822,22 +763,46 @@ static int do_get_hook_type(void __user *arg)
     return 0;
 }
 
+/* Capability bits for a reply: handler caps plus the bits the dispatcher
+ * owns. FORCED is global state, not a handler property. */
+static u32 extension_reply_caps(u32 extension_id, u32 caps)
+{
+    if (ksu_extension_is_forced(extension_id))
+        caps |= KSU_EXTENSION_FLAG_FORCED;
+    return caps;
+}
+
 /*
- * Single entry point for the four extensions. Userspace fills
+ * Single entry point for the six extension ops. Userspace fills
  * struct ksu_extension_cmd with an extension_id and one of:
- *   GET  -> returns supported/value. value=0 and supported=true
- *           for io-only handlers (handler presence is the signal).
+ *   ABI  -> answers the extension ABI probe. The id must be
+ *           KSU_EXTENSION_ABI_PROBE_ID, which no handler owns, so an old
+ *           kernel rejects the call with -EINVAL: that rejection is how
+ *           userspace tells "no capability bits available" apart from
+ *           "capability bits are all zero".
+ *   ENUM -> fills struct ksu_extension_desc at cmd.user_ptr for the
+ *           handler at index cmd.value. The id must also be
+ *           KSU_EXTENSION_ABI_PROBE_ID so pre-ABI-2 kernels reject it
+ *           instead of reading cmd.value as a sticky write. Returns
+ *           -ENOENT past the last registered handler.
+ *   GET  -> returns supported/value/capability bits. value=0 and
+ *           supported=true for io-only handlers (handler presence is the
+ *           signal).
  *   SET  -> value-flavoured: forwards to ops->set.
  *           io-flavoured:    -EOPNOTSUPP (no sticky bit).
  *           While a force_extension=<id> is in effect, all SETs
  *           return -EPERM until reboot. On success, the post-set
- *           state (supported / forced flag / current value) is
+ *           state (capability bits / forced flag / current value) is
  *           written back to *arg so userspace can confirm the write
  *           without an extra GET round-trip.
  *   IO   -> forwards cmd.user_ptr to the registered io_handler.
  *   WIPE -> handler->wipe (kernel-side). Today only umount_paths
  *           registers one; other handlers return -EOPNOTSUPP. Wipe
  *           does not go through io_handler.
+ *
+ * Every successful reply overwrites cmd.api_version with the kernel's
+ * extension ABI, so callers learn the negotiated version from the same
+ * round-trip that carries the data.
  */
 static int do_extension(void __user *arg)
 {
@@ -848,21 +813,56 @@ static int do_extension(void __user *arg)
     if (copy_from_user(&cmd, arg, sizeof(cmd)))
         return -EFAULT;
 
+    if (cmd.op == KSU_EXTENSION_ABI) {
+        if (cmd.id != KSU_EXTENSION_ABI_PROBE_ID)
+            return -EINVAL;
+        cmd.value = 0;
+        cmd.supported = 0;
+        cmd.api_version = KSU_EXTENSION_API_VERSION;
+        if (copy_to_user(arg, &cmd, sizeof(cmd)))
+            return -EFAULT;
+        return 0;
+    }
+
+    if (cmd.op == KSU_EXTENSION_ENUM) {
+        struct ksu_extension_desc desc;
+
+        if (cmd.id != KSU_EXTENSION_ABI_PROBE_ID)
+            return -EINVAL;
+        if (!cmd.user_ptr || cmd.value >> 32)
+            return -EINVAL;
+
+        ret = ksu_extension_enumerate((u32)cmd.value, &desc);
+        if (ret)
+            return ret;
+        if (copy_to_user((void __user *)(uintptr_t)cmd.user_ptr, &desc,
+                         sizeof(desc)))
+            return -EFAULT;
+
+        cmd.id = desc.id;
+        cmd.supported = desc.caps;
+        cmd.value = 0;
+        cmd.api_version = KSU_EXTENSION_API_VERSION;
+        if (copy_to_user(arg, &cmd, sizeof(cmd)))
+            return -EFAULT;
+        return 0;
+    }
+
     extension_id = cmd.id;
     if (extension_id >= KSU_EXTENSION_MAX)
         return -EINVAL;
 
     /* op == IO  -> forward the user pointer verbatim */
     if (cmd.op == KSU_EXTENSION_IO)
-        return ksu_extension_ioctl(extension_id,
+        return ksu_extension_ioctl(extension_id, cmd.api_version,
                                    (void __user *)(uintptr_t)cmd.user_ptr);
 
     /* op == WIPE -> call the extension's wipe handler if any */
     if (cmd.op == KSU_EXTENSION_WIPE)
-        return ksu_extension_wipe(extension_id);
+        return ksu_extension_wipe(extension_id, cmd.api_version);
 
     if (cmd.op == KSU_EXTENSION_SET) {
-        ret = ksu_extension_set(extension_id, cmd.value);
+        ret = ksu_extension_set(extension_id, cmd.api_version, cmd.value);
         if (ret)
             return ret;
         /*
@@ -875,13 +875,13 @@ static int do_extension(void __user *arg)
          */
         {
             u64 value = 0;
-            bool supported = false;
+            u32 caps = 0;
 
-            (void)ksu_extension_get(extension_id, &value, &supported);
-            cmd.supported = supported ? KSU_FEATURE_FLAG_SUPPORTED : 0;
-            if (ksu_extension_is_forced(extension_id))
-                cmd.supported |= KSU_EXTENSION_FLAG_FORCED;
+            (void)ksu_extension_get(extension_id, KSU_EXTENSION_API_VERSION,
+                                    &value, &caps);
+            cmd.supported = extension_reply_caps(extension_id, caps);
             cmd.value = value;
+            cmd.api_version = KSU_EXTENSION_API_VERSION;
             if (copy_to_user(arg, &cmd, sizeof(cmd)))
                 return -EFAULT;
         }
@@ -890,17 +890,16 @@ static int do_extension(void __user *arg)
 
     {
         u64 value = 0;
-        bool supported = false;
+        u32 caps = 0;
 
-        ret = ksu_extension_get(extension_id, &value, &supported);
+        ret = ksu_extension_get(extension_id, cmd.api_version, &value, &caps);
         if (ret)
             return ret;
-        if (!supported)
+        if (!(caps & KSU_FEATURE_FLAG_SUPPORTED))
             return -EOPNOTSUPP;
         cmd.value = value;
-        cmd.supported = KSU_FEATURE_FLAG_SUPPORTED;
-        if (ksu_extension_is_forced(extension_id))
-            cmd.supported |= KSU_EXTENSION_FLAG_FORCED;
+        cmd.supported = extension_reply_caps(extension_id, caps);
+        cmd.api_version = KSU_EXTENSION_API_VERSION;
         if (copy_to_user(arg, &cmd, sizeof(cmd)))
             return -EFAULT;
         return 0;

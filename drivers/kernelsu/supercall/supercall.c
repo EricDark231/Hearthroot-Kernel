@@ -10,6 +10,8 @@
 #include <linux/task_work.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
+#include <linux/cred.h>
+#include <linux/susfs.h>
 
 #include "uapi/supercall.h"
 #include "extension/extension.h"
@@ -141,4 +143,93 @@ void __init ksu_supercalls_init(void)
 void __exit ksu_supercalls_exit(void)
 {
     ksu_supercall_cleanup_state();
+}
+
+/*
+ * Kernel-side SUSFS command hook: kernel/reboot.c routes reboot(2) calls
+ * carrying SUSFS_MAGIC (fs configuration commands) or KSU_INSTALL_MAGIC2
+ * (supercall fd install) here. Lives in this island file because
+ * supercall/dispatch.c tracks upstream v4.3.0, which dropped it.
+ */
+int ksu_supercall_reboot_handler(void __user **arg);
+
+int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
+{
+    if (magic1 != KSU_INSTALL_MAGIC1) {
+        return -EINVAL; 
+    }
+
+    // If magic2 is susfs and current process is root
+    if (magic2 == SUSFS_MAGIC && current_uid().val == 0) {
+        switch(cmd) {
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+            case CMD_SUSFS_ADD_SUS_PATH:
+                susfs_add_sus_path(arg);
+                return 0;
+            case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+                susfs_add_sus_path_loop(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+            case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+                susfs_set_hide_sus_mnts_for_non_su_procs(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+            case CMD_SUSFS_ADD_SUS_KSTAT:
+                susfs_add_sus_kstat(arg);
+                return 0;
+            case CMD_SUSFS_UPDATE_SUS_KSTAT:
+                susfs_update_sus_kstat(arg);
+                return 0;
+            case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+                susfs_add_sus_kstat(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+            case CMD_SUSFS_SET_UNAME:
+                susfs_set_uname(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+            case CMD_SUSFS_ENABLE_LOG:
+                susfs_enable_log(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+            case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
+                susfs_set_cmdline_or_bootconfig(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+            case CMD_SUSFS_ADD_OPEN_REDIRECT:
+                susfs_add_open_redirect(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+            case CMD_SUSFS_ADD_SUS_MAP:
+                susfs_add_sus_map(arg);
+                return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+            case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+                susfs_set_avc_log_spoofing(arg);
+                return 0;
+            case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+                susfs_get_enabled_features(arg);
+                return 0;
+            case CMD_SUSFS_SHOW_VARIANT:
+                susfs_show_variant(arg);
+                return 0;
+            case CMD_SUSFS_SHOW_VERSION:
+                susfs_show_version(arg);
+                return 0;
+            default:
+                return -EINVAL;
+        }
+    }
+
+    if (magic2 == KSU_INSTALL_MAGIC2)
+        return ksu_supercall_reboot_handler(arg);
+
+    return -EINVAL;
 }
