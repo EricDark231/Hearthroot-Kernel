@@ -14,6 +14,9 @@
 #include <linux/version.h>
 #include <linux/sched/task_stack.h>
 #include <linux/ptrace.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#endif
 
 #include "arch.h"
 #include "policy/allowlist.h"
@@ -28,25 +31,36 @@
 #include "ksu.h"
 #include "util.h"
 
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs_def.h>
-#endif
-
 #define SU_PATH "/system/bin/su"
 #define SH_PATH "/system/bin/sh"
 
+#ifdef CONFIG_KSU_SUSFS
+DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);
+#else
 bool ksu_su_compat_enabled __read_mostly = true;
+#endif
 
 static int su_compat_feature_get(u64 *value)
 {
+#ifdef CONFIG_KSU_SUSFS
+    *value = static_key_enabled(&ksu_su_compat_enabled);
+#else
     *value = ksu_su_compat_enabled ? 1 : 0;
+#endif
     return 0;
 }
 
 static int su_compat_feature_set(u64 value)
 {
     bool enable = value != 0;
+#ifdef CONFIG_KSU_SUSFS
+    if (enable)
+        static_branch_enable(&ksu_su_compat_enabled);
+    else
+        static_branch_disable(&ksu_su_compat_enabled);
+#else
     ksu_su_compat_enabled = enable;
+#endif
     pr_info("su_compat: set to %d\n", enable);
     return 0;
 }
@@ -57,6 +71,13 @@ static const struct ksu_feature_handler su_compat_handler = {
     .get_handler = su_compat_feature_get,
     .set_handler = su_compat_feature_set,
 };
+
+#ifdef CONFIG_KSU_SUSFS
+void ksu_sucompat_mark_no_su(void)
+{
+    susfs_set_current_proc_no_su();
+}
+#endif
 
 static char __user *ksud_user_path(void)
 {
@@ -89,11 +110,12 @@ long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
     long ret;
     const struct cred *old_cred;
 
-    if (
 #ifdef CONFIG_KSU_SUSFS
-        susfs_is_current_proc_no_su() ||
+    if (unlikely(susfs_is_current_proc_no_su()))
+        goto do_orig_facessat;
 #endif
-        !ksu_is_allow_uid_for_current(current_uid().val)) {
+
+    if (!ksu_is_allow_uid_for_current(current_uid().val)) {
         goto do_orig_facessat;
     }
 
@@ -128,11 +150,12 @@ long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)
     long ret;
     const struct cred *old_cred;
 
-    if (
 #ifdef CONFIG_KSU_SUSFS
-        susfs_is_current_proc_no_su() ||
+    if (unlikely(susfs_is_current_proc_no_su()))
+        goto do_orig_stat;
 #endif
-        !ksu_is_allow_uid_for_current(current_uid().val)) {
+
+    if (!ksu_is_allow_uid_for_current(current_uid().val)) {
         goto do_orig_stat;
     }
 
@@ -181,11 +204,12 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
     if (unlikely(!filename_user))
         goto do_orig_execve;
 
-    if (
 #ifdef CONFIG_KSU_SUSFS
-        susfs_is_current_proc_no_su() ||
+    if (unlikely(susfs_is_current_proc_no_su()))
+        goto do_orig_execve;
 #endif
-        !ksu_is_allow_uid_for_current(current_uid().val))
+
+    if (!ksu_is_allow_uid_for_current(current_uid().val))
         goto do_orig_execve;
 
     addr = untagged_addr((unsigned long)*filename_user);
@@ -269,7 +293,7 @@ long ksu_handle_execve_sucompat(const char __user **filename_user, int orig_nr, 
                                              PT_REGS_PARM3(regs), false, orig_nr, regs);
 }
 
-long ksu_handle_execveat_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
+long ksu_handle_execveat_sucompat_regs(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
 {
     return ksu_handle_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM3(regs),
                                              PT_REGS_SYSCALL_PARM4(regs), true, orig_nr, regs);

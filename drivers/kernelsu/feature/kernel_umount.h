@@ -9,7 +9,7 @@ void ksu_kernel_umount_init(void);
 void ksu_kernel_umount_exit(void);
 
 // Handler function to be called from setresuid hook
-int ksu_handle_umount(uid_t old_uid, uid_t new_uid, bool was_zygote);
+int ksu_handle_umount(uid_t old_uid, uid_t new_uid);
 
 // for the umount list
 struct mount_entry {

@@ -10,6 +10,9 @@
 #include <linux/version.h>
 #include "klog.h" // IWYU pragma: keep
 #include "manager/throne_tracker.h"
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif
 
 #define MASK_SYSTEM (FS_CREATE | FS_MOVE | FS_EVENT_ON_CHILD)
 
@@ -30,6 +33,9 @@ static void ksu_track_throne_tw_func(struct callback_head *cb)
     if (current->flags & PF_EXITING)
         return;
     track_throne(false);
+#ifdef CONFIG_KSU_SUSFS
+    susfs_parse_priority_app_strings();
+#endif
 }
 
 // Never scan from the fsnotify handler: fsnotify_mark_srcu and the rename's dir

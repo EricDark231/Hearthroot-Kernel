@@ -11,11 +11,6 @@
 #define KERNEL_SU_CONTEXT "u:r:" KERNEL_SU_DOMAIN ":s0"
 #define KSU_FILE_CONTEXT "u:object_r:" KERNEL_SU_FILE ":s0"
 #define ZYGOTE_CONTEXT "u:r:zygote:s0"
-#ifdef CONFIG_KSU_SUSFS
-#define ZYGOTE_NEXT_CONTEXT "u:r:zygote_next:s0"
-#endif
-
-
 #define INIT_CONTEXT "u:r:init:s0"
 #define ADBD_CONTEXT "u:r:adbd:s0"
 
@@ -32,11 +27,6 @@ bool is_task_ksu_domain(const struct cred *cred);
 bool is_ksu_domain();
 
 bool is_zygote(const struct cred *cred);
-#ifdef CONFIG_KSU_SUSFS
-bool is_zygote_next(const struct cred *cred);
-#endif
-
-
 
 bool is_init(const struct cred *cred);
 bool is_adbd(const struct cred *cred);
@@ -50,5 +40,23 @@ void setup_ksu_cred();
 void escape_to_root_for_adb_root();
 
 extern u32 ksu_file_sid;
+
+#ifdef CONFIG_KSU_SUSFS
+extern u32 susfs_ksu_sid;
+extern u32 susfs_init_sid;
+extern u32 susfs_zygote_sid;
+extern u32 susfs_zygote_next_sid;
+extern u32 susfs_priv_app_sid;
+
+bool susfs_is_sid_equal(const struct cred *cred, u32 sid2);
+u32 susfs_get_sid_from_name(const char *secctx_name);
+u32 susfs_get_current_sid(void);
+void susfs_set_batch_sid(void);
+bool susfs_is_current_zygote_domain(void);
+bool susfs_is_current_zygote_next_domain(void);
+bool susfs_is_current_ksu_domain(void);
+bool susfs_is_current_init_domain(void);
+bool susfs_is_current_priv_app_domain(void);
+#endif
 
 #endif
