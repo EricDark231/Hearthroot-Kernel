@@ -1,0 +1,282 @@
+name: Hearthroot - Shared kernel compiler
+
+on:
+  workflow_call:
+    inputs:
+      edition:
+        description: Original, FinaSU or NoRoot
+        type: string
+        required: true
+      source_branch:
+        description: Official source branch
+        type: string
+        required: true
+      source_sha:
+        description: Full 40-character source commit
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Build ${{ inputs.edition }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      EDITION: ${{ inputs.edition }}
+      SOURCE_BRANCH: ${{ inputs.source_branch }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      KBUILD_BUILD_USER: EricDark231
+      KBUILD_BUILD_HOST: Hearthroot
+      CLANG_VER: clang-r596125
+      CLANG_BRANCH: mirror-goog-main-llvm-toolchain-source
+
+    steps:
+      - name: Validate requested edition and source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${EDITION}:${SOURCE_BRANCH}" in
+            Original:hearthroot-dev|FinaSU:Hearthroot-FinaSU|NoRoot:hearthroot-noroot) ;;
+            *) echo "::error::Invalid edition/branch: ${EDITION}:${SOURCE_BRANCH}"; exit 1 ;;
+          esac
+          if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Expected a pinned 40-character Git SHA"
+            exit 1
+          fi
+
+      - name: Checkout exact kernel commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          test -z "$(git status --porcelain)"
+          echo "Edition=${EDITION} Branch=${SOURCE_BRANCH} SHA=${SOURCE_SHA}"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flex bison bc libelf-dev libssl-dev dwarves lz4 zip unzip
+
+      - name: Cache Android clang-r596125
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang
+          key: hearthroot-android-clang-r596125-8b682640-v1
+
+      - name: Download Android Clang
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          mkdir -p "$CLANG_DIR"
+
+          for url in \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/8b6826407e25a197d7cf7ceacab0bf67c11173de/${CLANG_VER}.tar.gz" \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/${CLANG_VER}.tar.gz"
+          do
+            if curl -fL --retry 3 --connect-timeout 30 --max-time 1200 \
+              "$url" -o "$RUNNER_TEMP/hearthroot-clang.tgz" &&
+              tar -xzf "$RUNNER_TEMP/hearthroot-clang.tgz" -C "$CLANG_DIR" &&
+              test -x "$CLANG_DIR/bin/clang"; then
+              break
+            fi
+          done
+
+          if ! test -x "$CLANG_DIR/bin/clang"; then
+            git clone --depth=1 --filter=blob:none --sparse \
+              -b "$CLANG_BRANCH" \
+              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+              "$RUNNER_TEMP/hearthroot-clang-source"
+
+            git -C "$RUNNER_TEMP/hearthroot-clang-source" \
+              sparse-checkout set "$CLANG_VER"
+
+            cp -a \
+              "$RUNNER_TEMP/hearthroot-clang-source/$CLANG_VER/." \
+              "$CLANG_DIR/"
+          fi
+
+          test -x "$CLANG_DIR/bin/clang"
+
+      - name: Activate Clang
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$RUNNER_TEMP/clang/bin/clang"
+          echo "$RUNNER_TEMP/clang/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/clang/bin/clang" --version
+
+      - name: Configure and verify edition
+        shell: bash
+        run: |
+          set -euo pipefail
+          make ARCH=arm64 LLVM=1 gki_defconfig
+
+          case "$EDITION" in
+            Original)
+              grep -qx 'CONFIG_KSU=y' .config
+              grep -Eq '^KSU_COMMIT_SHA[[:space:]]*:=[[:space:]]*[0-9a-f]{8}$' drivers/kernelsu/Kbuild
+              ;;
+
+            FinaSU)
+              grep -qx 'CONFIG_KSU=y' .config
+              grep -qx 'CONFIG_KSU_SUSFS=y' .config
+              grep -Fq 'KSU_VERSION := 33090' drivers/kernelsu/Kbuild
+              grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+              ;;
+
+            NoRoot)
+              ! grep -qx 'CONFIG_KSU=y' .config
+              ! grep -qx 'CONFIG_KSU_SUSFS=y' .config
+              grep -qx 'CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y' .config
+              grep -qx 'CONFIG_MQ_IOSCHED_KYBER=y' .config
+              grep -qx 'CONFIG_MQ_IOSCHED_DEADLINE=y' .config
+              ! grep -qx 'CONFIG_MQ_IOSCHED_ADIOS=y' .config
+              ;;
+          esac
+
+          grep -qx 'CONFIG_SECURITY_SELINUX=y' .config
+          echo "Validated ${EDITION} gki_defconfig"
+
+      - name: Compile arm64 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make ARCH=arm64 LLVM=1 -j4 Image Image.lz4
+
+          test -s vmlinux
+          test -s System.map
+          test -s arch/arm64/boot/Image
+          test -s arch/arm64/boot/Image.lz4
+
+          magic="$(od -An -tx1 -N4 arch/arm64/boot/Image.lz4 | tr -d ' \n')"
+
+          if [ "$magic" != "02214c18" ]; then
+            lz4 -f -l -9 \
+              arch/arm64/boot/Image \
+              arch/arm64/boot/Image.lz4
+
+            magic="$(od -An -tx1 -N4 arch/arm64/boot/Image.lz4 | tr -d ' \n')"
+          fi
+
+          test "$magic" = "02214c18"
+
+          release="$(tr -d '\r\n' < include/config/kernel.release)"
+          [[ "$release" =~ ^[A-Za-z0-9._+-]+$ ]]
+
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+
+          sha256sum arch/arm64/boot/Image.lz4
+
+      - name: Package flashable AnyKernel3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$EDITION" in
+            Original) installer="packaging/anykernel/anykernel.sh" ;;
+            FinaSU) installer="packaging/finasu/anykernel.sh" ;;
+            NoRoot) installer=".github/anykernel/anykernel.sh" ;;
+          esac
+
+          test -s "$installer"
+
+          git clone --depth=1 --branch gki-2.0 \
+            https://github.com/WildKernels/AnyKernel3.git AnyKernel3
+
+          ak3_sha="$(git -C AnyKernel3 rev-parse HEAD)"
+
+          update_binary="AnyKernel3/META-INF/com/google/android/update-binary"
+
+          test -f "$update_binary"
+          test "$(grep -Fc -- '$bb --install -s bin;' "$update_binary")" -eq 1
+
+          sed -i 's/--install -s bin;/--install bin;/' "$update_binary"
+
+          cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
+          cp "$installer" AnyKernel3/anykernel.sh
+
+          sed -i \
+            "s|@KERNEL_RELEASE@|${KERNEL_RELEASE}|g" \
+            AnyKernel3/anykernel.sh
+
+          ! grep -Fq '@KERNEL_RELEASE@' AnyKernel3/anykernel.sh
+
+          bash -n AnyKernel3/anykernel.sh
+          test -s AnyKernel3/tools/ak3-core.sh
+          test -s AnyKernel3/META-INF/com/google/android/update-binary
+
+          mkdir -p out
+
+          zip_name="Hearthroot-${EDITION}-rodin-${KERNEL_RELEASE}-AnyKernel3.zip"
+
+          (
+            cd AnyKernel3
+
+            zip -q -r -9 "../out/$zip_name" \
+              anykernel.sh tools LICENSE Image banner META-INF
+          )
+
+          unzip -tq "out/$zip_name"
+
+          for required in anykernel.sh tools/ak3-core.sh Image META-INF/com/google/android/update-binary; do
+            unzip -Z -1 "out/$zip_name" |
+              grep -Fx "$required" >/dev/null
+          done
+
+          source_sha="$(sha256sum arch/arm64/boot/Image.lz4 | awk '{print $1}')"
+          packed_sha="$(unzip -p "out/$zip_name" Image | sha256sum | awk '{print $1}')"
+
+          test "$source_sha" = "$packed_sha"
+
+          zip_sha="$(sha256sum "out/$zip_name" | awk '{print $1}')"
+
+          jq -n \
+            --arg edition "$EDITION" \
+            --arg branch "$SOURCE_BRANCH" \
+            --arg commit "$SOURCE_SHA" \
+            --arg kernel_release "$KERNEL_RELEASE" \
+            --arg image_sha256 "$source_sha" \
+            --arg zip_sha256 "$zip_sha" \
+            --arg filename "$zip_name" \
+            --arg anykernel_sha "$ak3_sha" \
+            '{edition:$edition,branch:$branch,commit:$commit,kernel_release:$kernel_release,image_sha256:$image_sha256,zip_sha256:$zip_sha256,filename:$filename,anykernel_sha:$anykernel_sha}' \
+            > "out/manifest-${EDITION}.json"
+
+          echo "ZIP_NAME=$zip_name" >> "$GITHUB_ENV"
+          echo "Flashable ZIP: $zip_name ($zip_sha)"
+
+      - name: Upload ZIP and build manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ inputs.edition }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build summary
+        shell: bash
+        run: |
+          {
+            echo "### Hearthroot ${EDITION}"
+            echo "- Source: ${SOURCE_BRANCH} @ ${SOURCE_SHA}"
+            echo "- Kernel: ${KERNEL_RELEASE}"
+            echo "- Flashable ZIP: ${ZIP_NAME}"
+            echo "- Clang: ${CLANG_VER}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,32 @@
+name: Hearthroot - Test Original
+
+on:
+  push:
+    branches:
+      - hearthroot-dev
+    paths:
+      - '.github/workflows/test-original.yml'
+      - '.github/workflows/build-one.yml'
+      - 'arch/**'
+      - 'block/**'
+      - 'drivers/**'
+      - 'fs/**'
+      - 'include/**'
+      - 'init/**'
+      - 'kernel/**'
+      - 'mm/**'
+      - 'net/**'
+      - 'security/**'
+      - 'packaging/**'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Original internal build
+    uses: ./.github/workflows/build-one.yml
+    with:
+      edition: Original
+      source_branch: hearthroot-dev
+      source_sha: ${{ github.sha }}

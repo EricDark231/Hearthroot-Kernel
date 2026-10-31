@@ -1,0 +1,76 @@
+name: Hearthroot - Build all three editions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hearthroot-three-kernels
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Pin official branch commits
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.refs.outputs.matrix }}
+
+    steps:
+      - name: Resolve exact SHA for each edition
+        id: refs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_REF" != "refs/heads/hearthroot-dev" ]; then
+            echo "::error::Run this workflow from the default hearthroot-dev branch"
+            exit 1
+          fi
+
+          original="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/hearthroot-dev" --jq '.object.sha')"
+          finasu="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/Hearthroot-FinaSU" --jq '.object.sha')"
+          noroot="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/hearthroot-noroot" --jq '.object.sha')"
+
+          for sha in "$original" "$finasu" "$noroot"; do
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::Cannot resolve official branch SHA"
+              exit 1
+            }
+          done
+
+          matrix="$(jq -nc \
+            --arg original "$original" \
+            --arg finasu "$finasu" \
+            --arg noroot "$noroot" \
+            '{include:[
+              {edition:"Original",branch:"hearthroot-dev",sha:$original},
+              {edition:"FinaSU",branch:"Hearthroot-FinaSU",sha:$finasu},
+              {edition:"NoRoot",branch:"hearthroot-noroot",sha:$noroot}
+            ]}')"
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Pinned kernel sources"
+            echo "- Original: $original"
+            echo "- FinaSU: $finasu"
+            echo "- NoRoot: $noroot"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  kernels:
+    name: ${{ matrix.edition }}
+    needs: resolve
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+
+    uses: ./.github/workflows/build-one.yml
+    with:
+      edition: ${{ matrix.edition }}
+      source_branch: ${{ matrix.branch }}
+      source_sha: ${{ matrix.sha }}
