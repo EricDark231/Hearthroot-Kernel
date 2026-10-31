@@ -1,479 +1,432 @@
-name: release-kernel
+name: Hearthroot - Unified release
 
-# 手动触发：取最近一次成功的 build-kernel 构建产物，发布 release（默认 prerelease）。
-# Release body format: kernel version / build time / toolchain / changes.
-#   - 内核版本 / 构建时间 / 构建工具链 从 AK3 包内 Image 的 Linux banner 中提取，
-#     提取失败时回退到 artifact 名 / 构建记录时间
-#   - 变更内容优先用手动输入的 Markdown，留空时按「上一个 tag..本次构建 commit」自动生成
-# 产物（assets）：AnyKernel3 可刷包 + BakaSU manager（release / spoofed，arm64-v8a）
-
+# Manual only. A successful build-all.yml run is the only kernel source.
+# Dry-run by default: validate and upload a private release candidate artifact.
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: '发布 tag（例如 v1.3）'
-        required: true
-      title:
-        description: '发布标题（留空则用 tag）'
-        required: false
-        default: ''
-      changelog:
-        description: '变更内容，Markdown，原样写入正文「变更：」之后（留空则按上个 tag..本次构建 commit 自动生成）'
-        required: false
-        default: ''
       run_id:
-        description: 'build-kernel 运行 ID（留空则取最近一次成功构建）'
+        description: 'Successful build-all.yml run ID containing the three kernels'
+        required: true
+        type: string
+      tag:
+        description: 'Release tag, for example v1.3.2'
+        required: true
+        type: string
+      title:
+        description: 'Optional release title'
         required: false
-        default: ''
+        type: string
+      changelog:
+        description: 'Optional release notes appended after the asset list'
+        required: false
+        type: string
       prerelease:
-        description: '是否标记为 prerelease（true / false）'
-        required: false
-        default: 'true'
+        description: 'Publish as prerelease'
+        required: true
+        default: true
+        type: boolean
+      publish:
+        description: 'Actually publish to GitHub Releases (false = audit only)'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
   actions: read
 
-env:
-  KERNEL_BRANCH: hearthroot-dev
-  BUILD_WORKFLOW: build-kernel.yml
-  CONTROL_REPO: EricDark231/Hearthroot-Control
-  CONTROL_TAG: v1.0.0
+concurrency:
+  group: hearthroot-release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   release:
+    name: Verify and optionally publish unified release
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Collect and verify official artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_CHANGELOG: ${{ inputs.changelog }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          tag = os.environ['RELEASE_TAG']
+          run_id = os.environ['RUN_ID']
+          root = Path(os.environ['RUNNER_TEMP']) / 'hearthroot-unified-release'
+          kernels = root / 'downloaded-kernels'
+          ready = root / 'assets'
+          source = root / 'source'
+          for directory in (kernels, ready, source):
+              directory.mkdir(parents=True, exist_ok=True)
+
+          if not re.fullmatch(r'[1-9][0-9]{5,15}', run_id):
+              sys.exit('Invalid build run ID')
+          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', tag):
+              sys.exit('Invalid release tag')
+
+          def command(*args, stdout=None):
+              return subprocess.run(args, check=True, stdout=stdout)
+
+          def gh_json(endpoint):
+              result = subprocess.run(
+                  ['gh', 'api', endpoint], check=True, capture_output=True, text=True
+              )
+              return json.loads(result.stdout)
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          def check_zip(path, required=()):
+              if not path.is_file() or path.stat().st_size == 0:
+                  sys.exit(f'Missing or empty ZIP: {path}')
+              with zipfile.ZipFile(path) as archive:
+                  if archive.testzip() is not None:
+                      sys.exit(f'Corrupt ZIP: {path}')
+                  if not set(required).issubset(archive.namelist()):
+                      sys.exit(f'Incomplete ZIP: {path}')
+
+          def validate_asset_digest(path, release_asset):
+              digest = release_asset.get('digest') or ''
+              if digest:
+                  if not digest.startswith('sha256:'):
+                      sys.exit(f'Unexpected upstream digest: {digest}')
+                  if sha256(path) != digest.removeprefix('sha256:'):
+                      sys.exit(f'Upstream digest mismatch: {path.name}')
+
+          def download_release_asset(upstream, version, asset, dest):
+              if dest.exists():
+                  sys.exit(f'Duplicate release file: {dest.name}')
+              command('gh', 'release', 'download', version, '--repo', upstream,
+                      '--pattern', asset['name'], '--dir', str(dest.parent))
+              if not dest.is_file():
+                  sys.exit(f'Upstream release asset missing: {asset["name"]}')
+              validate_asset_digest(dest, asset)
+
+          # 1. The kernels MUST all belong to this specific successful build-all run.
+          run = gh_json(f'repos/{repo}/actions/runs/{run_id}')
+          if (run.get('conclusion') != 'success' or
+                  run.get('status') != 'completed' or
+                  run.get('head_branch') != 'hearthroot-dev' or
+                  run.get('path') != '.github/workflows/build-all.yml' or
+                  run.get('repository', {}).get('full_name') != repo):
+              sys.exit('Run is not a successful official build-all.yml execution')
+
+          artifact_data = gh_json(f'repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100')
+          required_artifacts = {f'kernel-{name}' for name in ('Original', 'FinaSU', 'NoRoot')}
+          found = {a['name'] for a in artifact_data['artifacts']
+                   if not a.get('expired') and a['name'] in required_artifacts}
+          if found != required_artifacts:
+              sys.exit(f'Missing kernel artifacts: {sorted(required_artifacts - found)}')
+          command('gh', 'run', 'download', run_id, '--repo', repo,
+                  '--pattern', 'kernel-*', '--dir', str(kernels))
+
+          branches = {'FinaSU': 'Hearthroot-FinaSU',
+                      'Original': 'hearthroot-dev',
+                      'NoRoot': 'hearthroot-noroot'}
+          manifests = {}
+          required_ak3 = ('anykernel.sh', 'tools/ak3-core.sh', 'Image',
+                          'META-INF/com/google/android/update-binary')
+          for edition, branch in branches.items():
+              directory = kernels / f'kernel-{edition}'
+              manifest = json.loads((directory / f'manifest-{edition}.json').read_text())
+              filename = manifest.get('filename', '')
+              if manifest.get('edition') != edition or manifest.get('branch') != branch:
+                  sys.exit(f'Manifest edition or branch mismatch: {edition}')
+              if not re.fullmatch(r'[0-9a-f]{40}', manifest.get('commit', '')):
+                  sys.exit(f'Invalid source commit: {edition}')
+              if not re.fullmatch(
+                  rf'Hearthroot-{edition}-rodin-[A-Za-z0-9._+-]+-AnyKernel3\.zip',
+                  filename
+              ):
+                  sys.exit(f'Invalid ZIP name: {edition}')
+              if edition == 'Original' and manifest['commit'] != run['head_sha']:
+                  sys.exit('Original commit differs from build-all run head')
+              kernel_zip = directory / filename
+              if sha256(kernel_zip) != manifest.get('zip_sha256'):
+                  sys.exit(f'Kernel ZIP checksum mismatch: {edition}')
+              check_zip(kernel_zip, required_ak3)
+              with zipfile.ZipFile(kernel_zip) as archive:
+                  digest = hashlib.sha256()
+                  with archive.open('Image') as image:
+                      magic = image.read(4)
+                      digest.update(magic)
+                      for chunk in iter(lambda: image.read(1024 * 1024), b''):
+                          digest.update(chunk)
+                  if magic.hex() != '02214c18':
+                      sys.exit(f'Non-legacy LZ4 kernel: {edition}')
+                  if digest.hexdigest() != manifest.get('image_sha256'):
+                      sys.exit(f'Kernel Image checksum mismatch: {edition}')
+              shutil.copy2(kernel_zip, ready / filename)
+              manifests[edition] = manifest
+              print(f'OK kernel: {edition} {manifest["commit"][:12]}')
+
+          # 2. Official FinaSU v1.3.2 manager; spoofed only if officially supplied.
+          finasu_repo, finasu_tag = 'LyraVoid/FinaSU', 'v1.3.2'
+          finasu_kbuild_data = gh_json(
+              f'repos/{repo}/contents/drivers/kernelsu/Kbuild?ref='
+              f'{manifests["FinaSU"]["commit"]}'
+          )
+          finasu_kbuild = base64.b64decode(
+              finasu_kbuild_data['content']).decode('utf-8')
+          if not re.search(r'^KSU_VERSION\s*:=\s*33090\s*$',
+                           finasu_kbuild, re.MULTILINE):
+              sys.exit('FinaSU source version does not match manager 33090')
+          if 'v1.3.2-9b32bde@Hearthroot-FinaSU' not in finasu_kbuild:
+              sys.exit('FinaSU source identity does not match expected v1.3.2')
+          finasu_assets = gh_json(f'repos/{finasu_repo}/releases/tags/{finasu_tag}')['assets']
+          finasu_normal_name = 'FinaSU_v1.3.2_33090-release.apk'
+          normal_assets = [a for a in finasu_assets if a['name'] == finasu_normal_name]
+          if len(normal_assets) != 1:
+              sys.exit('Official FinaSU v1.3.2 manager APK not found')
+          finasu_normal = ready / finasu_normal_name
+          download_release_asset(finasu_repo, finasu_tag, normal_assets[0], finasu_normal)
+          if sha256(finasu_normal) != (
+              '367e28a646d4f448218ea1fa5d1228fcdd5fb20623c5e22eecb3ea3462fb19e1'
+          ):
+              sys.exit('Official FinaSU manager SHA256 mismatch')
+          check_zip(finasu_normal)
+          finasu_spoof_assets = [a for a in finasu_assets if
+                                  a['name'].lower().endswith('.apk') and
+                                  'spoof' in a['name'].lower()]
+          if len(finasu_spoof_assets) > 1:
+              sys.exit('Multiple upstream FinaSU spoofed APKs; manual review required')
+          finasu_spoof = None
+          if finasu_spoof_assets:
+              finasu_spoof = ready / finasu_spoof_assets[0]['name']
+              download_release_asset(finasu_repo, finasu_tag,
+                                     finasu_spoof_assets[0], finasu_spoof)
+              check_zip(finasu_spoof)
+          else:
+              print('FinaSU has no official spoofed manager in this release')
+
+          # 3. Resolve BakaSU commit from the actual Original build's Kbuild.
+          kbuild_data = gh_json(
+              f'repos/{repo}/contents/drivers/kernelsu/Kbuild?ref='
+              f'{manifests["Original"]["commit"]}'
+          )
+          kbuild = base64.b64decode(kbuild_data['content']).decode('utf-8')
+          pins = re.findall(r'^KSU_COMMIT_SHA\s*:=\s*([0-9a-f]{8})\s*$',
+                            kbuild, re.MULTILINE)
+          if len(pins) != 1:
+              sys.exit('Exactly one literal BakaSU commit pin is required')
+          bakasu_pin = pins[0]
+          bakasu_repo = 'Baka-SU/BakaSU'
+          complete = None
+          normal_only = None
+          for page in range(1, 6):
+              candidate_runs = gh_json(
+                  f'repos/{bakasu_repo}/actions/workflows/build-manager.yml/runs?'
+                  f'branch=main&status=success&per_page=100&page={page}'
+              )['workflow_runs']
+              for candidate in candidate_runs:
+                  if not candidate.get('head_sha', '').startswith(bakasu_pin):
+                      continue
+                  artifacts = gh_json(
+                      f'repos/{bakasu_repo}/actions/runs/{candidate["id"]}/artifacts?per_page=100'
+                  )['artifacts']
+                  usable = {a['name']: a for a in artifacts if not a.get('expired')}
+                  normal = usable.get('Manager-release')
+                  spoof = usable.get('Spoofed-Manager-release')
+                  if normal:
+                      choice = (candidate, normal, spoof)
+                      if spoof:
+                          complete = choice
+                          break
+                      if not normal_only:
+                          normal_only = choice
+              if complete:
+                  break
+          selected = complete or normal_only
+          if not selected:
+              sys.exit(f'No unexpired BakaSU manager matching kernel SHA {bakasu_pin}')
+          bakasu_run, bakasu_release, bakasu_spoof_asset = selected
+
+          def extract_bakasu_apk(artifact, spoofed):
+              artifact_zip = source / f'bakasu-{artifact["id"]}.zip'
+              with artifact_zip.open('wb') as output:
+                  command('gh', 'api',
+                          f'repos/{bakasu_repo}/actions/artifacts/{artifact["id"]}/zip',
+                          stdout=output)
+              with zipfile.ZipFile(artifact_zip) as archive:
+                  candidates = [member for member in archive.infolist()
+                                if not member.is_dir() and
+                                member.filename.lower().endswith('.apk') and
+                                'arm64-v8a' in Path(member.filename).name.lower()]
+                  if len(candidates) != 1:
+                      sys.exit('Expected exactly one arm64-v8a APK in BakaSU artifact')
+                  name = Path(candidates[0].filename).name
+                  if spoofed and 'spoof' not in name.lower():
+                      if name.endswith('-release.apk'):
+                          name = name[:-len('-release.apk')] + '-spoofed-release.apk'
+                      else:
+                          name = name[:-len('.apk')] + '-spoofed.apk'
+                  destination = ready / name
+                  if destination.exists():
+                      sys.exit(f'Duplicate BakaSU APK name: {name}')
+                  with archive.open(candidates[0]) as source_apk:
+                      with destination.open('xb') as output:
+                          shutil.copyfileobj(source_apk, output)
+              check_zip(destination)
+              return destination
+
+          bakasu_normal = extract_bakasu_apk(bakasu_release, False)
+          bakasu_spoof = (extract_bakasu_apk(bakasu_spoof_asset, True)
+                          if bakasu_spoof_asset else None)
+          if not bakasu_spoof:
+              print('Matching BakaSU run has no unexpired spoofed Manager artifact')
+          print(f'BakaSU manager: run {bakasu_run["id"]}, SHA {bakasu_run["head_sha"]}')
+
+          # 4. Download the already released Hearthroot Control package.
+          control_repo, control_tag = 'EricDark231/Hearthroot-Control', 'v1.0.0'
+          control_name = 'Hearthroot-Control-v1.0.0.zip'
+          control_assets = gh_json(f'repos/{control_repo}/releases/tags/{control_tag}')['assets']
+          control_matches = [a for a in control_assets if a['name'] == control_name]
+          if len(control_matches) != 1:
+              sys.exit('Hearthroot Control v1.0.0 asset not found')
+          control = ready / control_name
+          download_release_asset(control_repo, control_tag, control_matches[0], control)
+          check_zip(control)
+
+          # Order governs the notes and upload arguments, independently of GitHub's UI sorting.
+          ordered = [
+              ('FinaSU kernel', ready / manifests['FinaSU']['filename']),
+              ('FinaSU Manager', finasu_normal),
+              *(([('FinaSU Spoofed Manager', finasu_spoof)]) if finasu_spoof else []),
+              ('BakaSU kernel (Original)', ready / manifests['Original']['filename']),
+              ('BakaSU Manager', bakasu_normal),
+              *(([('BakaSU Spoofed Manager', bakasu_spoof)]) if bakasu_spoof else []),
+              ('NoRoot kernel', ready / manifests['NoRoot']['filename']),
+              ('Hearthroot Control', control),
+          ]
+          if len({p.name for _, p in ordered}) != len(ordered):
+              sys.exit('Duplicate asset names are not allowed')
+          for _, path in ordered:
+              if not path.is_file() or path.stat().st_size == 0:
+                  sys.exit(f'Missing release asset {path}')
+
+          notes = ['# Hearthroot Kernel', '',
+                   '**Device:** POCO X7 Pro (`rodin`)  ',
+                   f'**Validated CI run:** `{run_id}`  ',
+                   '**Build:** Android 15 / Linux 6.6.144', '',
+                   '## 1. FinaSU', '',
+                   f'- Kernel: `{ordered[0][1].name}`',
+                   f'- Manager oficial: `{finasu_normal.name}`']
+          if finasu_spoof:
+              notes.append(f'- Manager Spoofed oficial: `{finasu_spoof.name}`')
+          else:
+              notes.append('- Manager Spoofed: no disponible en la release oficial v1.3.2')
+          notes += ['', '## 2. BakaSU (Hearthroot Original)', '',
+                    f'- Kernel: `{manifests["Original"]["filename"]}`',
+                    f'- Manager normal: `{bakasu_normal.name}`']
+          if bakasu_spoof:
+              notes.append(f'- Manager Spoofed: `{bakasu_spoof.name}`')
+          else:
+              notes.append('- Manager Spoofed: no disponible en los artefactos válidos')
+          notes += ['', f'**Commit BakaSU:** `{bakasu_run["head_sha"]}`',
+                    '', '## 3. NoRoot', '',
+                    f'- Kernel sin root integrado: `{manifests["NoRoot"]["filename"]}`',
+                    '', '## 4. Hearthroot Control', '',
+                    f'- Módulo: `{control_name}`', '',
+                    '## Procedencia y seguridad', '',
+                    f'- [Compilación conjunta verificada](https://github.com/{repo}/actions/runs/{run_id})',
+                    '- Cada ZIP incluye su propia imagen y manifiesto SHA256 comprobado.',
+                    '- Instala solo **una** edición del kernel, nunca varias a la vez.',
+                    '- Haz una copia de seguridad de la partición boot antes de flashear.',
+                    '- El éxito de CI no sustituye la prueba de arranque en el dispositivo.', '']
+          changelog = os.environ.get('RELEASE_CHANGELOG', '').strip()
+          if changelog:
+              notes += ['## Cambios', '', changelog, '']
+
+          audit = root / 'audit'
+          audit.mkdir(exist_ok=True)
+          (audit / 'release-notes.md').write_text('\n'.join(notes) + '\n')
+          (audit / 'assets.lst').write_text('\n'.join(str(p) for _, p in ordered) + '\n')
+          (audit / 'SHA256SUMS.txt').write_text(
+              ''.join(f'{sha256(p)}  {p.name}\n' for _, p in ordered))
+          (audit / 'sources.json').write_text(json.dumps({
+              'kernel_run_id': int(run_id),
+              'kernel_run_head_sha': run['head_sha'],
+              'kernels': manifests,
+              'finasu_manager_release': f'{finasu_repo}:{finasu_tag}',
+              'bakasu_manager_run': bakasu_run['id'],
+              'bakasu_manager_sha': bakasu_run['head_sha'],
+              'hearthroot_control_release': f'{control_repo}:{control_tag}'
+          }, indent=2) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'RELEASE_TARGET_SHA={run["head_sha"]}\n')
+
+          print('\nVerified release order:')
+          for label, path in ordered:
+              print(f'  {label}: {path.name}  SHA256={sha256(path)}')
+          print(f'Ready: {len(ordered)} release assets; NO public release created')
+          PY
+
+      - name: Upload verified candidate for inspection
+        uses: actions/upload-artifact@v4
         with:
-          ref: ${{ env.KERNEL_BRANCH }}
-          fetch-depth: 0
-          fetch-tags: true
+          name: Hearthroot-release-candidate-${{ inputs.run_id }}
+          path: |
+            ${{ runner.temp }}/hearthroot-unified-release/assets/*
+            ${{ runner.temp }}/hearthroot-unified-release/audit/*
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Resolve latest successful build run
+      - name: Publish verified assets to GitHub Releases
+        if: ${{ inputs.publish }}
         env:
-          GH_TOKEN: ${{ github.token }}
-          IN_RUN_ID: ${{ inputs.run_id }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TITLE: ${{ inputs.title }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
         run: |
           set -euo pipefail
-          RUN_ID="${IN_RUN_ID}"
-          if [ -z "$RUN_ID" ]; then
-            RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${BUILD_WORKFLOW}/runs?branch=${KERNEL_BRANCH}&status=success&per_page=1" \
-                     --jq '.workflow_runs[0].id')
-          fi
-          [ -n "$RUN_ID" ] || { echo "::error::no successful ${BUILD_WORKFLOW} run found on ${KERNEL_BRANCH}"; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
-            --jq '"build run: \(.id) (\(.display_title)) head=\(.head_sha) created=\(.created_at)"'
-          HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.head_sha')
-          CREATED_AT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.created_at')
-          {
-            echo "RUN_ID=${RUN_ID}"
-            echo "HEAD_SHA=${HEAD_SHA}"
-            echo "RUN_CREATED_AT=${CREATED_AT}"
-          } >> "$GITHUB_ENV"
-
-      - name: Download build artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/dl"
-          AK3_ID=""; AK3_NAME=""; MGR_ID=""; MGR_NAME=""; SPOOF_ID=""; SPOOF_NAME=""
-          while IFS=$'\t' read -r id name; do
-            [ -n "$id" ] || continue
-            case "$name" in
-              *-AnyKernel3)                         AK3_ID="$id";   AK3_NAME="$name" ;;
-              BakaSU-Manager-Spoofed-arm64-v8a)  SPOOF_ID="$id"; SPOOF_NAME="$name" ;;
-              BakaSU-Manager-arm64-v8a)          MGR_ID="$id";   MGR_NAME="$name" ;;
-            esac
-          done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
-                   --jq '.artifacts[] | select(.expired==false) | "\(.id)\t\(.name)"')
-          [ -n "$AK3_ID" ] || { echo "::error::AnyKernel3 artifact not found in run ${RUN_ID}"; exit 1; }
-          [ -n "$MGR_ID" ] || { echo "::error::BakaSU Manager artifact missing"; exit 1; }
-          [ -n "$SPOOF_ID" ] || { echo "::error::BakaSU Spoofed Manager artifact missing"; exit 1; }
-          echo "AK3   : ${AK3_NAME} (${AK3_ID})"
-          echo "MGR   : ${MGR_NAME:-<none>} (${MGR_ID:-none})"
-          echo "SPOOF : ${SPOOF_NAME:-<none>} (${SPOOF_ID:-none})"
-
-          # AK3 artifact 的 zip 本身就是可刷包，直接下载即用
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AK3_ID}/zip" > "$RUNNER_TEMP/dl/ak3.zip"
-          unzip -oq "$RUNNER_TEMP/dl/ak3.zip" -d "$RUNNER_TEMP/dl/ak3"
-          test -f "$RUNNER_TEMP/dl/ak3/Image" || { echo "::error::Image blob missing in AnyKernel3 artifact"; exit 1; }
-
-          # manager artifact 里是 apk，需要解包取出
-          for pair in "${MGR_ID:-}|mgr" "${SPOOF_ID:-}|spoof"; do
-            aid="${pair%%|*}"; d="${pair##*|}"
-            [ -n "$aid" ] || continue
-            mkdir -p "$RUNNER_TEMP/dl/$d"
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${aid}/zip" > "$RUNNER_TEMP/dl/$d.zip"
-            unzip -oq "$RUNNER_TEMP/dl/$d.zip" -d "$RUNNER_TEMP/dl/$d"
-          done
-          ls -la "$RUNNER_TEMP/dl/ak3" "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" 2>/dev/null || true
-
-          {
-            echo "AK3_PATH=${RUNNER_TEMP}/dl/ak3.zip"
-            echo "AK3_NAME=${AK3_NAME}"
-          } >> "$GITHUB_ENV"
-
-      - name: Download Hearthroot No Root
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          NOROOT_RUN=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-noroot.yml/runs?branch=hearthroot-noroot&status=success&per_page=1" \
-            --jq '.workflow_runs[0].id // empty')
-
-          [ -n "$NOROOT_RUN" ] || {
-            echo "::error::No successful No Root build found"
+          TAG="$RELEASE_TAG"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release already exists: $TAG"
             exit 1
-          }
-
-          NOROOT_SHA=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN}" \
-            --jq '.head_sha')
-
-          NOROOT_ARTIFACT=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${NOROOT_RUN}/artifacts?per_page=100" \
-            --jq '.artifacts[] | select(.expired==false and (.name | startswith("Hearthroot-NoRoot-"))) | .id' | head -n1)
-
-          [ -n "$NOROOT_ARTIFACT" ] || {
-            echo "::error::No Root artifact missing"
+          fi
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag already exists: $TAG"
             exit 1
-          }
-
-          mkdir -p "$RUNNER_TEMP/dl/noroot"
-
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${NOROOT_ARTIFACT}/zip" \
-            > "$RUNNER_TEMP/dl/noroot-artifact.zip"
-
-          unzip -oq "$RUNNER_TEMP/dl/noroot-artifact.zip" \
-            -d "$RUNNER_TEMP/dl/noroot"
-
-          NOROOT_ZIP=$(find "$RUNNER_TEMP/dl/noroot" \
-            -type f -name 'Hearthroot-NoRoot-*.zip' -print -quit)
-
-          [ -n "$NOROOT_ZIP" ] || {
-            echo "::error::Flashable No Root ZIP missing"
-            exit 1
-          }
-
-          unzip -tq "$NOROOT_ZIP" >/dev/null
-
-          for file in anykernel.sh tools/ak3-core.sh Image; do
-            unzip -Z -1 "$NOROOT_ZIP" | grep -Fxq "$file" || {
-              echo "::error::Missing No Root installer file: $file"
-              exit 1
-            }
-          done
-
-          NOROOT_VERSION=$(basename "$NOROOT_ZIP" .zip)
-          NOROOT_VERSION="${NOROOT_VERSION#Hearthroot-NoRoot-}"
-          NOROOT_SHORT="${NOROOT_VERSION%%-*}"
-
-          {
-            echo "NOROOT_PATH=$NOROOT_ZIP"
-            echo "NOROOT_SHORT=$NOROOT_SHORT"
-            echo "NOROOT_SHA=$NOROOT_SHA"
-          } >> "$GITHUB_ENV"
-
-          echo "No Root: $NOROOT_VERSION"
-          echo "Build: $NOROOT_RUN ($NOROOT_SHA)"
-
-      - name: Download Hearthroot Control
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          CONTROL_FILE="Hearthroot-Control-${CONTROL_TAG}.zip"
-          mkdir -p "$RUNNER_TEMP/dl/control"
-
-          gh release download "$CONTROL_TAG" \
-            --repo "$CONTROL_REPO" \
-            --pattern "$CONTROL_FILE" \
-            --dir "$RUNNER_TEMP/dl/control"
-
-          CONTROL_PATH="$RUNNER_TEMP/dl/control/$CONTROL_FILE"
-          test -s "$CONTROL_PATH" || {
-            echo "::error::Hearthroot Control ZIP missing or empty"
-            exit 1
-          }
-
-          unzip -tq "$CONTROL_PATH" >/dev/null || {
-            echo "::error::Invalid Hearthroot Control ZIP"
-            exit 1
-          }
-
-          echo "CONTROL_PATH=$CONTROL_PATH" >> "$GITHUB_ENV"
-          echo "CONTROL_FILE=$CONTROL_FILE" >> "$GITHUB_ENV"
-          echo "Hearthroot Control: $CONTROL_TAG"
-
-      - name: Extract kernel banner (version / build time / toolchain)
-        run: |
-          set -euo pipefail
-          REL_FROM_ARTIFACT="${AK3_NAME#Hearthroot-rodin-}"
-          REL_FROM_ARTIFACT="${REL_FROM_ARTIFACT%-AnyKernel3}"
-          KREL="$REL_FROM_ARTIFACT"
-          BLDTIME="$(date -u -d "$RUN_CREATED_AT" '+%a %b %e %H:%M:%S UTC %Y')"
-          TOOLCHAIN="clang-r596125"
-          BANNER_FOUND=""
-
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends lz4 binutils
-          RAW="$RUNNER_TEMP/Image.raw"
-          if lz4 -d -f "$RUNNER_TEMP/dl/ak3/Image" "$RAW" 2>/dev/null; then
-            BANNER=$(strings -n 16 "$RAW" | grep -m1 -E '^Linux version [^ ]+ \(' || true)
           fi
-          if [ -n "${BANNER:-}" ]; then
-            echo "banner: $BANNER"
-            P_REL=$(printf '%s\n' "$BANNER" | sed -E 's/^Linux version ([^ ]+).*/\1/')
-            P_TIME=$(printf '%s\n' "$BANNER" | sed -nE 's/.*\) (# [0-9]+ .*)$/\1/p')
-            P_TC=$(printf '%s\n' "$BANNER" | sed -nE 's/^Linux version [^ ]+ \([^)]*\) \((.*)\) # [0-9]+ .*$/\1/p')
-            [ -n "$P_REL" ] && KREL="$P_REL" && BANNER_FOUND=yes
-            [ -n "$P_TIME" ] && BLDTIME="$P_TIME"
-            [ -n "$P_TC" ] && TOOLCHAIN="$P_TC"
-          fi
-          if [ -z "$BANNER_FOUND" ]; then
-            echo "::warning::could not parse kernel banner from Image, falling back to artifact name / run time"
-          fi
-
-          SHORT="$(printf '%s' "$KREL" | cut -d- -f1)"
-          {
-            echo "KREL=${KREL}"
-            echo "SHORT=${SHORT}"
-            echo "BLDTIME=${BLDTIME}"
-            echo "TOOLCHAIN=${TOOLCHAIN}"
-          } >> "$GITHUB_ENV"
-          echo "内核版本：$KREL"
-          echo "构建时间：$BLDTIME"
-          echo "构建工具链：$TOOLCHAIN"
-
-      - name: Prepare changelog
-        run: |
-          set -euo pipefail
-          CHANGES_FILE="$RUNNER_TEMP/changes.md"
-          if [ -n "$CHANGELOG_INPUT" ]; then
-            printf '%s\n' "$CHANGELOG_INPUT" > "$CHANGES_FILE"
-            echo "using manual changelog"
-          else
-            echo "::warning::changelog input empty - generating from commits"
-            PREV_TAG="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
-            if [ -n "$PREV_TAG" ] && git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
-              RANGE="${PREV_TAG}..${HEAD_SHA}"
-            else
-              RANGE="HEAD"
-            fi
-            echo "commit range: ${RANGE} (prev tag: ${PREV_TAG:-<none>})"
-            git log -n 8 --no-merges --pretty='- %s' "$RANGE" > "$CHANGES_FILE" || true
-            [ -s "$CHANGES_FILE" ] || printf '%s\n' 'Kernel maintenance and upstream synchronization.' > "$CHANGES_FILE"
-          fi
-          echo "----- changes.md -----"
-          cat "$CHANGES_FILE"
-        env:
-          CHANGELOG_INPUT: ${{ inputs.changelog }}
-
-      - name: Create release
-        env:
-          # 本仓库是 fork，org/repo 的 workflow 默认权限为只读，GITHUB_TOKEN 创建 release
-          # 会被拒（HTTP 403: Resource not accessible by integration），因此改用 PAT
-          PAT: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ github.token }}
-          IN_TAG: ${{ inputs.tag }}
-          IN_TITLE: ${{ inputs.title }}
-          IN_PRERELEASE: ${{ inputs.prerelease }}
-        run: |
-          set -euo pipefail
-          if [ -n "${PAT}" ]; then
-            export GH_TOKEN="${PAT}"
-          else
-            echo "::warning::secret GH_PAT not set, falling back to GITHUB_TOKEN"
-            export GH_TOKEN="${GITHUB_TOKEN}"
-          fi
-          NOTES="$RUNNER_TEMP/notes.md"
-          {
-            cat <<'HEADER'
-            # 🌿 Hearthroot Kernel
-
-            **Custom Android kernel for POCO X7 Pro (rodin)**
-
-            Hearthroot focuses on performance, stability, efficiency and customization,
-            while preserving compatibility with the device's native hardware behavior.
-
-            This release includes two kernel variants: **Root** and **No Root**,
-            alongside Hearthroot Control and the BakaSU managers.
-
-            ## 🌱 Kernel Variants
-
-            ### 1. Hearthroot Root
-
-            The complete Hearthroot experience, featuring integrated root support
-            and advanced kernel modifications.
-
-            **Features:**
-            - BakaSU with SUSFS integration
-            - ADIOS 3.3.0 I/O scheduler
-            - CPU and performance optimizations
-            - BBRv3 + fq networking
-            - ZSTD 1.5.7 and ZRAM with LZ4
-            - Cortex-A725 tuning
-            - ThinLTO + AutoFDO
-            - Baseband Guard (BBG)
-
-            ### 2. Hearthroot No Root
-
-            A streamlined variant for users who prefer a kernel without
-            integrated root support.
-
-            **Features:**
-            - No integrated BakaSU or SUSFS
-            - Kyber as the preferred I/O scheduler
-            - mq-deadline and BFQ available
-            - Hearthroot build identity
-            - Flashable AnyKernel3 installer
-
-            **Note:** No Root refers to the kernel configuration.
-            It does not necessarily prevent using a separate root implementation.
-
-            ## 🍃 Hearthroot Control
-
-            The companion management module for Hearthroot.
-
-            **Features:**
-            - Performance and battery profiles
-            - CPU governor and I/O scheduler controls
-            - Xiaomi Parts integration
-            - Integrated Hearthroot Companion
-            - Seasonal themes and customizable interface
-
-          HEADER
-
-            printf '**Included version:** `%s`\n\n' "$CONTROL_TAG"
-
-            printf '## 🔧 Build Information\n\n'
-            printf '| Component | Version |\n'
-            printf '|---|---|\n'
-            printf '| Hearthroot Root | `%s` |\n' "$KREL"
-            printf '| Hearthroot No Root | `%s` |\n' "$NOROOT_SHORT"
-            printf '| Device | POCO X7 Pro (`rodin`) |\n\n'
-
-            printf '**Root build date:** `%s`\n\n' "$BLDTIME"
-            printf '**Toolchain:** `%s`\n\n' "$TOOLCHAIN"
-
-            printf '## 📦 Downloads\n\n'
-
-            printf '1. **Hearthroot Root:** `Hearthroot-Root-%s.zip`\n' "$SHORT"
-            printf '2. **Hearthroot No Root:** `Hearthroot-NoRoot-%s.zip`\n' "$NOROOT_SHORT"
-            printf '3. **Hearthroot Control:** `%s`\n' "$CONTROL_FILE"
-            printf '4. **BakaSU Manager:** standard APK\n'
-            printf '5. **BakaSU Spoofed Manager:** alternative APK\n\n'
-
-            cat <<'FOOTER'
-            ## 🔧 Compatibility & Installation
-
-            **Device:** POCO X7 Pro (`rodin`)
-
-            **Recovery:** OrangeFox recommended. Other AOSP recoveries
-            have not been fully validated.
-
-            **Installation:** Flash only one kernel variant using a
-            compatible recovery. Do not install Root and No Root together.
-
-            Hearthroot Control is installed separately through a compatible
-            root manager. Its Companion APK can be installed using Volume UP
-            during module installation.
-
-            **Xiaomi Parts:** Integration has been tested with the TeamMEX_XDA
-            device-tree implementation. Compatibility with the IDO implementation
-            remains unverified.
-
-            ## ⚠️ Important Notes
-
-            - Root and No Root are alternative kernel builds, not installation stages.
-            - BakaSU Manager is intended for configurations using BakaSU.
-            - Some Hearthroot Control features require root access.
-            - Functionality may vary depending on the ROM and root configuration.
-            - Back up important data before flashing.
-
-            ## 📝 Changelog
-
-          FOOTER
-
-            cat "$RUNNER_TEMP/changes.md"
-          } > "$NOTES"
-          echo "----- release notes -----"
-          cat "$NOTES"
-
-          if gh release view "$IN_TAG" >/dev/null 2>&1; then
-            echo "::error::release ${IN_TAG} already exists"; exit 1
-          fi
-
-          mkdir -p out
-          (
-            cd "$RUNNER_TEMP/dl/ak3"
-            zip -qr "$GITHUB_WORKSPACE/out/Hearthroot-Root-${SHORT}.zip" .
-          )
-          cp "$NOROOT_PATH" "out/Hearthroot-NoRoot-${NOROOT_SHORT}.zip"
-
-          ASSETS=(
-            "out/Hearthroot-Root-${SHORT}.zip"
-            "out/Hearthroot-NoRoot-${NOROOT_SHORT}.zip"
-          )
-          cp "$CONTROL_PATH" "out/$CONTROL_FILE"
-          ASSETS+=("out/$CONTROL_FILE")
-          while IFS= read -r apk; do
-            [ -n "$apk" ] || continue
-            cp "$apk" "out/$(basename "$apk")"
-            ASSETS+=("out/$(basename "$apk")")
-          done < <(find "$RUNNER_TEMP/dl/mgr" "$RUNNER_TEMP/dl/spoof" -type f -name '*.apk' 2>/dev/null | sort)
-          ls -la out
-
-          # Validate the complete release before publishing.
-          [ "${#ASSETS[@]}" -eq 5 ] || {
-            echo "::error::Expected exactly five release assets, found ${#ASSETS[@]}"
-            exit 1
-          }
-
-          for asset in "${ASSETS[@]}"; do
-            [ -s "$asset" ] || {
-              echo "::error::Missing or empty release asset: $asset"
-              exit 1
-            }
-          done
-
-          for kernel_zip in "out/Hearthroot-Root-${SHORT}.zip" "out/Hearthroot-NoRoot-${NOROOT_SHORT}.zip"; do
-            unzip -tq "$kernel_zip" >/dev/null || {
-              echo "::error::Invalid kernel ZIP: $kernel_zip"
-              exit 1
-            }
-
-            for required in anykernel.sh Image tools/ak3-core.sh; do
-              if ! unzip -Z -1 "$kernel_zip" | grep -Fxq "$required"; then
-                echo "::error::Missing $required in $kernel_zip"
-                exit 1
-              fi
-            done
-          done
-
-          echo "All five release assets validated."
-
+          ROOT="$RUNNER_TEMP/hearthroot-unified-release"
+          mapfile -t ASSETS < "$ROOT/audit/assets.lst"
+          test "${#ASSETS[@]}" -ge 6
           EXTRA=()
-          if [ "${IN_PRERELEASE}" != "false" ]; then
+          if [ "$PRERELEASE" = true ]; then
             EXTRA+=(--prerelease)
           else
             EXTRA+=(--latest)
           fi
-
-          gh release create "$IN_TAG" \
+          gh release create "$TAG" "${ASSETS[@]}" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "${HEAD_SHA:-$KERNEL_BRANCH}" \
-            --title "${IN_TITLE:-$IN_TAG}" \
-            --notes-file "$NOTES" \
-            "${EXTRA[@]}" \
-            "${ASSETS[@]}"
-
-          gh release view "$IN_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease,url --jq '"released \(.tagName) prerelease=\(.isPrerelease) \(.url)"' \
-            >> "$GITHUB_STEP_SUMMARY"
+            --target "$RELEASE_TARGET_SHA" \
+            --title "${RELEASE_TITLE:-$TAG}" \
+            --notes-file "$ROOT/audit/release-notes.md" \
+            "${EXTRA[@]}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,url,assets \
+            --jq '{tag: .tagName, url: .url, assets: [.assets[].name]}'
