@@ -695,7 +695,7 @@ DEFINE_MUTEX(system_transition_mutex);
 
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
-extern int ksu_handle_susfs_cmd(unsigned int cmd, void __user **arg);
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
 #endif
 /*
  * Reboot system call: for obvious reasons only root may call it,
@@ -717,7 +717,7 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
                 if (current_uid().val != 0)
                         return -EPERM;
 
-                return ksu_handle_susfs_cmd(cmd, &arg);
+                return ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
         }
 #endif
 
