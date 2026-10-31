@@ -44,6 +44,12 @@
 #include "conditional.h"
 #include "ima.h"
 
+#ifdef CONFIG_KSU_SUSFS
+extern bool ksu_selinux_hide_running __read_mostly;
+extern ssize_t my_write_context(struct file *file, char *buf, size_t size);
+extern ssize_t my_write_access(struct file *file, char *buf, size_t size);
+#endif
+
 
 enum sel_inos {
 	SEL_ROOT_INO = 2,
@@ -655,6 +661,15 @@ out:
 }
 
 #ifdef CONFIG_KSU_SUSFS
+static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size)
+{
+    if (likely(current_uid().val >= 10000 && ksu_selinux_hide_running))
+        return my_write_context(file, buf, size);
+    return sel_write_context(file, buf, size);
+}
+#endif
+
+#ifdef CONFIG_KSU_SUSFS
 /*
  * PRECISION_SELINUX_HOOK_HIDELIST
  * selinux-hook: types that must look non-existent to ordinary apps.
@@ -822,18 +837,29 @@ static const struct file_operations sel_transition_ops = {
  * Remaining nodes use transaction based IO methods like nfsd/nfsctl.c
  */
 static ssize_t sel_write_access(struct file *file, char *buf, size_t size);
+#ifdef CONFIG_KSU_SUSFS
+static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size);
+#endif
 static ssize_t sel_write_create(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_relabel(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
 
 static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
+#ifdef CONFIG_KSU_SUSFS
+	[SEL_ACCESS] = handle_sel_write_access,
+#else
 	[SEL_ACCESS] = sel_write_access,
+#endif
 	[SEL_CREATE] = sel_write_create,
 	[SEL_RELABEL] = sel_write_relabel,
 	[SEL_USER] = sel_write_user,
 	[SEL_MEMBER] = sel_write_member,
+#ifdef CONFIG_KSU_SUSFS
+	[SEL_CONTEXT] = handle_sel_write_context,
+#else
 	[SEL_CONTEXT] = sel_write_context,
+#endif
 };
 
 static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
@@ -924,6 +950,15 @@ out:
 	return length;
 }
 
+
+#ifdef CONFIG_KSU_SUSFS
+static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size)
+{
+    if (likely(current_uid().val >= 10000 && ksu_selinux_hide_running))
+        return my_write_access(file, buf, size);
+    return sel_write_access(file, buf, size);
+}
+#endif
 
 static ssize_t sel_write_create(struct file *file, char *buf, size_t size)
 {
