@@ -713,8 +713,12 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	int ret = 0;
 
 #ifdef CONFIG_KSU_SUSFS
-        if (magic1 == 0xDEADBEEF && magic2 == SUSFS_MAGIC) {
-                if (current_uid().val != 0)
+        if (magic1 == 0xDEADBEEF &&
+            (magic2 == SUSFS_MAGIC ||
+             (IS_ENABLED(CONFIG_KSU_HOOK_SUSFS_INLINE) &&
+              magic2 == 0xCAFEBABE))) {
+                if (magic2 == SUSFS_MAGIC &&
+                    current_uid().val != 0)
                         return -EPERM;
 
                 return ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);

@@ -459,6 +459,12 @@ static const struct cred *access_override_creds(void)
 }
 
 
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+extern int ksu_handle_faccessat(
+    int *dfd, struct filename **filename,
+    int *mode, int *unused_flags);
+#endif
+
 static long do_faccessat(int dfd, const char __user *filename, int mode, int flags)
 {
 	struct path path;
@@ -466,6 +472,9 @@ static long do_faccessat(int dfd, const char __user *filename, int mode, int fla
 	int res;
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
 	const struct cred *old_cred = NULL;
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+	struct filename *ksu_filename = NULL;
+#endif
 
 
 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
@@ -485,8 +494,28 @@ static long do_faccessat(int dfd, const char __user *filename, int mode, int fla
 			return -ENOMEM;
 	}
 
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    ksu_filename = getname_flags(
+        filename, lookup_flags, NULL);
+
+    if (IS_ERR(ksu_filename)) {
+        res = PTR_ERR(ksu_filename);
+        ksu_filename = NULL;
+        goto out;
+    }
+
+    ksu_handle_faccessat(
+        &dfd, &ksu_filename, &mode, &flags);
+#endif
+
 retry:
-	res = user_path_at(dfd, filename, lookup_flags, &path);
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    res = filename_lookup(
+        dfd, ksu_filename, lookup_flags, &path, NULL);
+#else
+    res = user_path_at(
+        dfd, filename, lookup_flags, &path);
+#endif
 	if (res)
 		goto out;
 
@@ -526,6 +555,10 @@ out_path_release:
 		goto retry;
 	}
 out:
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    if (ksu_filename)
+        putname(ksu_filename);
+#endif
 	if (old_cred)
 		revert_creds(old_cred);
 

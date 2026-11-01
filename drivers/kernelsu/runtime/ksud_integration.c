@@ -508,6 +508,18 @@ void ksu_handle_init_rc_fstat(int fd, loff_t *size)
 static unsigned int volumedown_pressed_count = 0;
 static bool input_hook_stopped;
 
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+static void ksu_disable_input_static_key_work(struct work_struct *work)
+{
+    if (static_key_enabled(&ksu_is_input_hook_enabled))
+        static_branch_disable(&ksu_is_input_hook_enabled);
+}
+
+static DECLARE_WORK(
+    ksu_input_static_key_work,
+    ksu_disable_input_static_key_work);
+#endif
+
 static bool is_volumedown_enough(unsigned int count)
 {
     return count >= 3;
@@ -687,8 +699,7 @@ void ksu_stop_input_hook_runtime(void)
     }
     WRITE_ONCE(input_hook_stopped, true);
 #ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
-    if (static_key_enabled(&ksu_is_input_hook_enabled))
-        static_branch_disable(&ksu_is_input_hook_enabled);
+    schedule_work(&ksu_input_static_key_work);
 #else
     schedule_work(&stop_input_hook_work);
 #endif

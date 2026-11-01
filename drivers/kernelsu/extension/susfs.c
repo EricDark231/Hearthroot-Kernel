@@ -1,6 +1,7 @@
 #include <linux/cred.h>
 #include <linux/err.h>
 #include <linux/fs.h>
+#include <linux/jump_label.h>
 #include <linux/kernel.h>
 #include <linux/namei.h>
 #include <linux/sched.h>
@@ -33,6 +34,8 @@ void ksu_handle_init_rc_read(unsigned int fd);
 void ksu_handle_init_rc_fstat(int fd, loff_t *size);
 
 #ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+DECLARE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);
+
 static bool inline_filename_valid(struct filename **filename_ptr)
 {
     return filename_ptr && *filename_ptr && !IS_ERR(*filename_ptr) && (*filename_ptr)->name;
@@ -89,6 +92,7 @@ static int inline_handle_execveat(int *fd, struct filename **filename_ptr, struc
     struct ksu_sulog_pending_event *pending_sucompat = NULL;
     const char __user *const __user *argv_user = argv ? inline_argv_ptr(argv) : NULL;
     const char *path;
+    const struct cred *before_creds;
     long ret;
 
     if (!inline_filename_valid(filename_ptr) || !fd || !flags)
@@ -112,7 +116,16 @@ static int inline_handle_execveat(int *fd, struct filename **filename_ptr, struc
 
     pending_sucompat = ksu_sulog_capture_sucompat_kernel(path, argv_user, GFP_KERNEL);
     pr_info("sucompat: direct exec su -> ksud\n");
+    before_creds = get_current_cred();
     ret = escape_with_root_profile();
+
+    if (!ret && current_cred() == before_creds) {
+        pr_warn("sucompat: root profile was not applied\n");
+        ret = -EPERM;
+    }
+
+    put_cred(before_creds);
+
     ksu_sulog_emit_pending(pending_sucompat, ret, GFP_KERNEL);
     pending_sucompat = NULL;
     if (ret)
@@ -197,11 +210,19 @@ int ksu_handle_stat(int *dfd, struct filename **filename, int *flags)
 
 void ksu_handle_sys_read(unsigned int fd)
 {
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    if (!static_branch_likely(&ksu_is_init_rc_hook_enabled))
+        return;
+#endif
     ksu_handle_init_rc_read(fd);
 }
 
 void ksu_handle_vfs_fstat(int fd, loff_t *size)
 {
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    if (!static_branch_likely(&ksu_is_init_rc_hook_enabled))
+        return;
+#endif
     if (size)
         ksu_handle_init_rc_fstat(fd, size);
 }

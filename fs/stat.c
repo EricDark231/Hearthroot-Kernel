@@ -235,6 +235,14 @@ EXPORT_SYMBOL_NS(vfs_getattr, ANDROID_GKI_VFS_EXPORT_ONLY);
  */
 
 
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+extern int ksu_handle_stat(
+    int *dfd, struct filename **filename, int *flags);
+
+extern void ksu_handle_vfs_fstat(
+    int fd, loff_t *size);
+#endif
+
 int vfs_fstat(int fd, struct kstat *stat)
 {
 	struct fd f;
@@ -244,6 +252,10 @@ int vfs_fstat(int fd, struct kstat *stat)
 	if (!f.file)
 		return -EBADF;
 	error = vfs_getattr(&f.file->f_path, stat, STATX_BASIC_STATS, 0);
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    if (!error)
+        ksu_handle_vfs_fstat(fd, &stat->size);
+#endif
 	fdput(f);
 	return error;
 }
@@ -290,6 +302,10 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
 	if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH |
 		      AT_STATX_SYNC_TYPE))
 		return -EINVAL;
+
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    ksu_handle_stat(&dfd, &filename, &flags);
+#endif
 
 retry:
 	error = filename_lookup(dfd, filename, lookup_flags, &path, NULL);

@@ -809,6 +809,7 @@ static ssize_t sel_write_validatetrans(struct file *file,
 
 #ifdef CONFIG_KSU_SUSFS
 	if (current_uid().val >= 10000 &&
+	    ksu_selinux_hide_running &&
 	    (susfs_hide_suspicious_ctx(oldcon) ||
 	     susfs_hide_suspicious_ctx(newcon) ||
 	     susfs_hide_suspicious_ctx(taskcon))) {
@@ -877,6 +878,7 @@ static ssize_t selinux_transaction_write(struct file *file, const char __user *b
 
 #ifdef CONFIG_KSU_SUSFS
 	if (ino != SEL_ACCESS && current_uid().val >= 10000 &&
+	    ksu_selinux_hide_running &&
 	    susfs_hide_suspicious_ctx(data))
 		return -EINVAL;
 #endif

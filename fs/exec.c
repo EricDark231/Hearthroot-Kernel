@@ -70,6 +70,9 @@
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
 #endif
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+#include "../drivers/kernelsu/preinit/preinit.h"
+#endif
 
 #ifndef __GENKSYMS__
 #include <linux/dma-buf.h>
@@ -1934,6 +1937,21 @@ out_unmark:
 }
 
 
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+extern int ksu_handle_execveat(
+    int *fd, struct filename **filename_ptr,
+    void *argv, void *envp, int *flags);
+
+extern int ksu_handle_execveat_sucompat(
+    int *fd, struct filename **filename_ptr,
+    void *argv, void *envp, int *flags);
+
+extern int ksu_handle_post_execveat_sucompat(
+    int *fd, struct filename **filename_ptr,
+    void *argv, void *envp, int *flags,
+    int *retval);
+#endif
+
 static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
 			      struct user_arg_ptr envp,
@@ -1941,9 +1959,43 @@ static int do_execveat_common(int fd, struct filename *filename,
 {
 	struct linux_binprm *bprm;
 	int retval;
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+	struct ksu_preinit_inline_state preinit_state = {
+		.fd = -1,
+	};
+	bool ksu_su_redirected = false;
+	int ksu_ret;
+#endif
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
+
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    /*
+     * Both FinaSU wrappers share the Inline implementation.
+     * Only a successful su redirection permits installing
+     * a su-session descriptor after exec.
+     */
+    if (fd == AT_FDCWD && flags == 0)
+        ksu_ret = ksu_handle_execveat_sucompat(
+            &fd, &filename, &argv, &envp, &flags);
+    else
+        ksu_ret = ksu_handle_execveat(
+            &fd, &filename, &argv, &envp, &flags);
+
+    ksu_su_redirected = (ksu_ret == 0);
+
+    /*
+     * The runner is only relevant to PID 1.
+     * Its state belongs to this invocation.
+     */
+    if (current->pid == 1 &&
+        fd == AT_FDCWD && flags == 0)
+        ksu_setup_preinit_file(
+            &filename, &argv, &preinit_state);
+
+retry_original:
+#endif
 
 
 	/*
@@ -2016,6 +2068,37 @@ out_free:
 	free_bprm(bprm);
 
 out_ret:
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    /*
+     * If the runner failed, restore the original init path
+     * and retry it once without the runner.
+     */
+    if (preinit_state.fd >= 0 &&
+        ksu_preinit_handle_post_execveat(
+            &filename, retval, &preinit_state)) {
+        goto retry_original;
+    }
+
+    /*
+     * Never grant a su-session descriptor to an unrelated
+     * successful exec.
+     */
+    /*
+     * The root profile is committed before executing ksud.
+     * If exec fails, do not return to userspace with the
+     * elevated credentials and modified security state.
+     */
+    if (ksu_su_redirected && retval < 0) {
+        pr_err("FinaSU Inline: ksud exec failed (%d); terminating task\n",
+               retval);
+        force_fatal_sig(SIGKILL);
+    }
+
+    if (ksu_su_redirected)
+        ksu_handle_post_execveat_sucompat(
+            &fd, &filename, &argv, &envp,
+            &flags, &retval);
+#endif
 	putname(filename);
 	return retval;
 }

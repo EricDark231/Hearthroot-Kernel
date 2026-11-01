@@ -7,6 +7,12 @@
 struct filename;
 struct user_arg_ptr;
 
+struct ksu_preinit_inline_state {
+    struct filename *original;
+    struct filename *swapped;
+    int fd;
+};
+
 #ifndef KSU_NO_PREINIT
 void ksu_preinit_init(void);
 void ksu_preinit_exit(void);
@@ -15,9 +21,12 @@ void ksu_preinit_exit(void);
 // Returns true when it issued the syscall itself; the result is in *ret.
 bool ksu_preinit_handle_execve(const char __user **filename_user, const char __user *const __user *argv_user,
                                int orig_nr, struct pt_regs *regs, long *ret);
-int ksu_setup_preinit_file(struct filename **filename_ptr, struct user_arg_ptr *argv_user);
-int ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_ptr, void *argv_user, void *envp_user,
-                                     int *flags, int *retval, int *preinit_fd);
+int ksu_setup_preinit_file(struct filename **filename_ptr,
+                           struct user_arg_ptr *argv_user,
+                           struct ksu_preinit_inline_state *state);
+bool ksu_preinit_handle_post_execveat(
+    struct filename **filename_ptr, int retval,
+    struct ksu_preinit_inline_state *state);
 
 // Drop the staged runner if selinux_setup was never seen.
 void ksu_preinit_release(void);
@@ -37,14 +46,19 @@ static inline bool ksu_preinit_handle_execve(const char __user **filename_user,
 {
     return false;
 }
-static inline int ksu_setup_preinit_file(struct filename **filename_ptr, struct user_arg_ptr *argv_user)
+static inline int ksu_setup_preinit_file(
+    struct filename **filename_ptr,
+    struct user_arg_ptr *argv_user,
+    struct ksu_preinit_inline_state *state)
 {
-    return 0;
+    return -1;
 }
-static inline int ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_ptr, void *argv_user,
-                                                   void *envp_user, int *flags, int *retval, int *preinit_fd)
+
+static inline bool ksu_preinit_handle_post_execveat(
+    struct filename **filename_ptr, int retval,
+    struct ksu_preinit_inline_state *state)
 {
-    return 0;
+    return false;
 }
 static inline void ksu_preinit_release(void)
 {
