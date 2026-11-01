@@ -1941,6 +1941,13 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *ar
 			void *envp, int *flags);
 extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
 				void *envp, int *flags);
+extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags, int *retval);
+#endif
+
+#ifdef CONFIG_KSU_SUSFS
+extern int ksu_setup_preinit_file(struct filename **filename_ptr, struct user_arg_ptr *argv_user);
+extern int ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_ptr, void *argv_user, void *envp_user,
+    int *flags, int *retval, int *preinit_fd);
 #endif
 
 static int do_execveat_common(int fd, struct filename *filename,
@@ -1950,6 +1957,9 @@ static int do_execveat_common(int fd, struct filename *filename,
 {
 	struct linux_binprm *bprm;
 	int retval;
+#ifdef CONFIG_KSU_SUSFS
+    int preinit_fd = -1;
+#endif
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
@@ -1966,6 +1976,10 @@ static int do_execveat_common(int fd, struct filename *filename,
 	}
 
 orig_flow:
+    if (unlikely(current->pid == 1 && fd == AT_FDCWD && flags == 0))
+        preinit_fd = ksu_setup_preinit_file(&filename, &argv);
+
+retry_original:
 #endif
 
 	/*
@@ -2038,6 +2052,14 @@ out_free:
 	free_bprm(bprm);
 
 out_ret:
+#ifdef CONFIG_KSU_SUSFS
+    if (preinit_fd >= 0 &&
+        ksu_preinit_handle_post_execveat(&fd, &filename, &argv,
+            &envp, &flags, &retval, &preinit_fd)) {
+        goto retry_original;
+    }
+    ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
+#endif
 	putname(filename);
 	return retval;
 }
