@@ -19,6 +19,9 @@
 #include <linux/workqueue.h>
 #include <linux/uio.h>
 #include <linux/stat.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/jump_label.h>
+#endif
 
 #include "arch.h"
 #include "klog.h" // IWYU pragma: keep
@@ -30,6 +33,22 @@
 #include "hook/syscall_hook.h"
 #include "hook/syscall_event_bridge.h"
 #include "preinit/preinit.h"
+
+#ifdef CONFIG_KSU_SUSFS
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);
+DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);
+#else
+DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
+DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
+#endif
+#endif
+
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+void ksu_stop_ksud_execve_hook(void)
+{
+}
+#endif
 
 // clang-format off
 static const char KERNEL_SU_RC[] =
@@ -54,22 +73,13 @@ static const char KERNEL_SU_RC[] =
 static void stop_init_rc_hook();
 static void stop_execve_hook();
 
+#ifndef CONFIG_KSU_HOOK_SUSFS_INLINE
 static struct work_struct stop_input_hook_work;
+#endif
 
 #define MAX_ARG_STRINGS 0x7FFFFFFF
-struct user_arg_ptr {
-#ifdef CONFIG_COMPAT
-    bool is_compat;
-#endif
-    union {
-        const char __user *const __user *native;
-#ifdef CONFIG_COMPAT
-        const compat_uptr_t __user *compat;
-#endif
-    } ptr;
-};
 
-static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
+const char __user *ksu_get_user_arg_ptr(struct user_arg_ptr argv, int nr)
 {
     const char __user *native;
 
@@ -105,7 +115,7 @@ static int __maybe_unused count(struct user_arg_ptr argv, int max)
 
     if (argv.ptr.native != NULL) {
         for (;;) {
-            const char __user *p = get_user_arg_ptr(argv, i);
+            const char __user *p = ksu_get_user_arg_ptr(argv, i);
 
             if (!p)
                 break;
@@ -133,7 +143,7 @@ static bool check_argv(struct user_arg_ptr argv, int index, const char *expected
     if (argc <= index)
         return false;
 
-    p = get_user_arg_ptr(argv, index);
+    p = ksu_get_user_arg_ptr(argv, index);
     if (!p || IS_ERR(p))
         goto fail;
 
@@ -466,13 +476,32 @@ static void ksu_install_rc_hook(struct file *file)
     file->f_op = &fops_proxy;
 }
 
-static void ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
+void ksu_handle_init_rc_read(unsigned int fd)
 {
     struct file *file = fget(fd);
     if (!file) {
         return;
     }
     ksu_install_rc_hook(file);
+    fput(file);
+}
+
+static void ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
+{
+    ksu_handle_init_rc_read(fd);
+}
+
+void ksu_handle_init_rc_fstat(int fd, loff_t *size)
+{
+    struct file *file = fget(fd);
+
+    if (!file)
+        return;
+    if (is_init_rc(file)) {
+        pr_info("stat init.rc");
+        load_module_rc_once();
+        *size += ksu_rc_len + module_rc_len;
+    }
     fput(file);
 }
 
@@ -491,7 +520,6 @@ int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *v
 
     if (*type == EV_KEY && *code == KEY_VOLUMEDOWN) {
         int val = *value;
-        pr_info("KEY_VOLUMEDOWN val: %d\n", val);
         if (val) {
             // key pressed, count it
             volumedown_pressed_count += 1;
@@ -641,9 +669,15 @@ static void do_stop_input_hook(struct work_struct *work)
 
 static void stop_init_rc_hook()
 {
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    if (static_key_enabled(&ksu_is_init_rc_hook_enabled))
+        static_branch_disable(&ksu_is_init_rc_hook_enabled);
+    pr_info("unregister init_rc static branch\n");
+#else
     ksu_syscall_table_unhook(__NR_read);
     ksu_syscall_table_unhook(__NR_fstat);
     pr_info("unregister init_rc syscall hook\n");
+#endif
 }
 
 void ksu_stop_input_hook_runtime(void)
@@ -652,13 +686,18 @@ void ksu_stop_input_hook_runtime(void)
         return;
     }
     WRITE_ONCE(input_hook_stopped, true);
-    bool ret = schedule_work(&stop_input_hook_work);
-    pr_info("unregister input kprobe: %d!\n", ret);
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+    if (static_key_enabled(&ksu_is_input_hook_enabled))
+        static_branch_disable(&ksu_is_input_hook_enabled);
+#else
+    schedule_work(&stop_input_hook_work);
+#endif
 }
 
 // ksud: module support
 void __init ksu_ksud_init()
 {
+#ifndef CONFIG_KSU_HOOK_SUSFS_INLINE
     int ret;
 
 #ifdef CONFIG_ARM64
@@ -683,10 +722,12 @@ void __init ksu_ksud_init()
 
     ret = register_kprobe(&input_event_kp);
     pr_info("ksud: input_event_kp: %d\n", ret);
+#endif
 }
 
 void __exit ksu_ksud_exit()
 {
+#ifndef CONFIG_KSU_HOOK_SUSFS_INLINE
     // TODO:
     // this should be done before unregister vfs_read_kp
     // stop_init_rc_hook();
@@ -695,4 +736,5 @@ void __exit ksu_ksud_exit()
     if (module_rc_buf) {
         free_module_rc();
     }
+#endif
 }

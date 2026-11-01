@@ -56,7 +56,8 @@ int ksu_syscall_table_hook_checked(int nr, syscall_fn_t fn,
 // (e.g. ksud unhooking __NR_read after init.rc injection is done).
 void ksu_syscall_table_unhook(int nr);
 
-void ksu_syscall_hook_init(void);
+int ksu_syscall_table_init(void);
+int ksu_syscall_hook_init(void);
 void ksu_syscall_hook_exit(void);
 
 #endif

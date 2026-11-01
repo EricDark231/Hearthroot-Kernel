@@ -40,6 +40,7 @@ static int ksu_wrapper_open(struct inode *ino, struct file *fp)
         filp_close(orig_file, current->files);
         return PTR_ERR(wrapper);
     }
+    fput(orig_file);
     fp->private_data = wrapper;
     const struct file_operations *new_fops = fops_get(&wrapper->ops);
     replace_fops(fp, new_fops);
@@ -536,12 +537,13 @@ int ksu_install_file_wrapper(int fd)
     struct inode *wrapper_inode = file_inode(wrapper_file);
     // libc's stdio relies on the fstat() result of the fd to determine its buffer type.
     wrapper_inode->i_mode = file_inode(orig_file)->i_mode;
-    struct inode_security_struct *wrapper_sec = selinux_inode(wrapper_inode);
-    // Use ksu_file_sid to bypass SELinux check.
-    // When we call `su` from terminal app, this is useful.
-    if (wrapper_sec) {
-        wrapper_sec->sid = ksu_file_sid;
+    struct inode_security_struct *wrapper_sec = ksu_selinux_inode(wrapper_inode);
+    if (IS_ERR(wrapper_sec)) {
+        ret = PTR_ERR(wrapper_sec);
+        goto out_put_wrapper_file;
     }
+    if (wrapper_sec)
+        wrapper_sec->sid = ksu_file_sid;
     // Install open file operation for inode.
     wrapper_inode->i_fop = &ksu_file_wrapper_inode_fops;
 

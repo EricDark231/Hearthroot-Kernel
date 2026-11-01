@@ -145,48 +145,123 @@ static void ksu_sys_enter_handler(void *data, struct pt_regs *regs, long id)
 }
 #endif
 
-void __init ksu_syscall_hook_manager_init(void)
+static bool ksu_syscall_hook_manager_started;
+
+int __init ksu_syscall_hook_manager_init(void)
 {
     int ret;
-    pr_info("hook_manager: ksu_hook_manager_init called\n");
+    int registered_nr[5];
+    int registered_count = 0;
+
+    pr_info("hook_manager: initialization started\n");
+
+    if (!ksu_syscall_table || ksu_dispatcher_nr < 0) {
+        pr_err("hook_manager: dispatcher unavailable\n");
+        return -ENOENT;
+    }
 
 #ifdef CONFIG_KRETPROBES
-    syscall_regfunc_rp = init_kretprobe("syscall_regfunc", syscall_regfunc_handler);
-    syscall_unregfunc_rp = init_kretprobe("syscall_unregfunc", syscall_unregfunc_handler);
+    syscall_regfunc_rp = init_kretprobe(
+        "syscall_regfunc", syscall_regfunc_handler);
+
+    if (!syscall_regfunc_rp) {
+        ret = -ENOENT;
+        goto fail_probes;
+    }
+
+    syscall_unregfunc_rp = init_kretprobe(
+        "syscall_unregfunc", syscall_unregfunc_handler);
+
+    if (!syscall_unregfunc_rp) {
+        ret = -ENOENT;
+        goto fail_probes;
+    }
 #endif
 
-    // Register syscall hooks via dispatcher
 #ifndef CONFIG_KSU_SUSFS
-    ksu_register_syscall_hook(__NR_setresuid, ksu_hook_setresuid);
+    ret = ksu_register_syscall_hook(
+        __NR_setresuid, ksu_hook_setresuid);
+    if (ret)
+        goto fail_routes;
+    registered_nr[registered_count++] = __NR_setresuid;
 #endif
-    ksu_register_syscall_hook(__NR_execve, ksu_hook_execve);
-    ksu_register_syscall_hook(__NR_execveat, ksu_hook_execveat);
-    ksu_register_syscall_hook(__NR_newfstatat, ksu_hook_newfstatat);
-    ksu_register_syscall_hook(__NR_faccessat, ksu_hook_faccessat);
+
+    ret = ksu_register_syscall_hook(
+        __NR_execve, ksu_hook_execve);
+    if (ret)
+        goto fail_routes;
+    registered_nr[registered_count++] = __NR_execve;
+
+    ret = ksu_register_syscall_hook(
+        __NR_execveat, ksu_hook_execveat);
+    if (ret)
+        goto fail_routes;
+    registered_nr[registered_count++] = __NR_execveat;
+
+    ret = ksu_register_syscall_hook(
+        __NR_newfstatat, ksu_hook_newfstatat);
+    if (ret)
+        goto fail_routes;
+    registered_nr[registered_count++] = __NR_newfstatat;
+
+    ret = ksu_register_syscall_hook(
+        __NR_faccessat, ksu_hook_faccessat);
+    if (ret)
+        goto fail_routes;
+    registered_nr[registered_count++] = __NR_faccessat;
 
 #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
-    ret = register_trace_prio_sys_enter(ksu_sys_enter_handler, NULL, INT_MIN);
+    ret = register_trace_prio_sys_enter(
+        ksu_sys_enter_handler, NULL, INT_MIN);
+
+    if (ret) {
+        pr_err("hook_manager: tracepoint failed: %d\n", ret);
+        goto fail_routes;
+    }
+
 #ifndef CONFIG_KRETPROBES
     ksu_mark_running_process_locked();
 #endif
-    if (ret) {
-        pr_err("hook_manager: failed to register sys_enter tracepoint: %d\n", ret);
-    } else {
-        pr_info("hook_manager: sys_enter tracepoint registered\n");
-    }
+
+    pr_info("hook_manager: tracepoint registered\n");
+#else
+    ret = -EOPNOTSUPP;
+    goto fail_routes;
 #endif
 
     ksu_setuid_hook_init();
     ksu_sucompat_init();
+
+    ksu_syscall_hook_manager_started = true;
+
+    return 0;
+
+fail_routes:
+    while (registered_count > 0)
+        ksu_unregister_syscall_hook(
+            registered_nr[--registered_count]);
+
+#ifdef CONFIG_KRETPROBES
+fail_probes:
+    destroy_kretprobe(&syscall_unregfunc_rp);
+    destroy_kretprobe(&syscall_regfunc_rp);
+#endif
+
+    pr_err("hook_manager: initialization failed: %d\n", ret);
+
+    return ret;
 }
 
 void __exit ksu_syscall_hook_manager_exit(void)
 {
-    pr_info("hook_manager: ksu_hook_manager_exit called\n");
+    pr_info("hook_manager: cleanup started\n");
+
 #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
-    unregister_trace_sys_enter(ksu_sys_enter_handler, NULL);
-    tracepoint_synchronize_unregister();
-    pr_info("hook_manager: sys_enter tracepoint unregistered\n");
+    if (ksu_syscall_hook_manager_started) {
+        unregister_trace_sys_enter(
+            ksu_sys_enter_handler, NULL);
+        tracepoint_synchronize_unregister();
+    }
 #endif
 
 #ifdef CONFIG_KRETPROBES
@@ -194,16 +269,22 @@ void __exit ksu_syscall_hook_manager_exit(void)
     destroy_kretprobe(&syscall_unregfunc_rp);
 #endif
 
+    if (ksu_syscall_hook_manager_started) {
 #ifndef CONFIG_KSU_SUSFS
-    ksu_unregister_syscall_hook(__NR_setresuid);
+        ksu_unregister_syscall_hook(__NR_setresuid);
 #endif
-    ksu_unregister_syscall_hook(__NR_execve);
-    ksu_unregister_syscall_hook(__NR_execveat);
-    ksu_unregister_syscall_hook(__NR_newfstatat);
-    ksu_unregister_syscall_hook(__NR_faccessat);
+        ksu_unregister_syscall_hook(__NR_execve);
+        ksu_unregister_syscall_hook(__NR_execveat);
+        ksu_unregister_syscall_hook(__NR_newfstatat);
+        ksu_unregister_syscall_hook(__NR_faccessat);
+    }
 
     ksu_syscall_hook_exit();
 
-    ksu_sucompat_exit();
-    ksu_setuid_hook_exit();
+    if (ksu_syscall_hook_manager_started) {
+        ksu_sucompat_exit();
+        ksu_setuid_hook_exit();
+    }
+
+    ksu_syscall_hook_manager_started = false;
 }

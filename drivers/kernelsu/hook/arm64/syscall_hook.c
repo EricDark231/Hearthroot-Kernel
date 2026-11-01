@@ -247,32 +247,53 @@ bool ksu_has_syscall_hook(int nr)
     return READ_ONCE(syscall_hooks[nr]) != NULL;
 }
 
-void __init ksu_syscall_hook_init(void)
+int __init ksu_syscall_table_init(void)
+{
+    ksu_syscall_table = (syscall_fn_t *)
+        ksu_resolve_symbol_for_functable_hook("sys_call_table");
+
+    pr_info("sys_call_table=0x%lx",
+            (unsigned long)ksu_syscall_table);
+
+    if (!ksu_syscall_table)
+        return -ENOENT;
+
+    return 0;
+}
+
+int __init ksu_syscall_hook_init(void)
 {
     int ni_slot;
+    int ret;
 
     memset(syscall_hooks, 0, sizeof(syscall_hooks));
 
-    ksu_syscall_table = (syscall_fn_t *)ksu_resolve_symbol_for_functable_hook("sys_call_table");
-    pr_info("sys_call_table=0x%lx", (unsigned long)ksu_syscall_table);
+    ret = ksu_syscall_table_init();
+    if (ret)
+        return ret;
 
-    if (!ksu_syscall_table)
-        return;
-
-    // Find one ni_syscall slot for the dispatcher
     if (ksu_find_ni_syscall_slots(&ni_slot, 1) < 1) {
         pr_err("failed to find ni_syscall slot for dispatcher\n");
-        return;
+        return -ENOENT;
     }
 
-    if (ksu_syscall_table_hook_checked(
-            ni_slot, (syscall_fn_t)ksu_syscall_dispatcher, NULL)) {
-        pr_err("failed to install syscall dispatcher at slot %d\n", ni_slot);
-        return;
+    ret = ksu_syscall_table_hook_checked(
+        ni_slot,
+        (syscall_fn_t)ksu_syscall_dispatcher,
+        NULL
+    );
+
+    if (ret) {
+        pr_err("failed to install syscall dispatcher at slot %d: %d\n",
+               ni_slot, ret);
+        return ret;
     }
 
     WRITE_ONCE(ksu_dispatcher_nr, ni_slot);
+
     pr_info("dispatcher installed at slot %d\n", ni_slot);
+
+    return 0;
 }
 
 void __exit ksu_syscall_hook_exit(void)
