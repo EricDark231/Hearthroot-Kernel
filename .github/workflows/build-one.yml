@@ -32,6 +32,7 @@ jobs:
       KBUILD_BUILD_HOST: Hearthroot
       CLANG_VER: clang-r596125
       CLANG_BRANCH: mirror-goog-main-llvm-toolchain-source
+      CLANG_PIN: 8b6826407e25a197d7cf7ceacab0bf67c11173de
 
     steps:
       - name: Validate requested edition and source SHA
@@ -62,6 +63,39 @@ jobs:
           test -z "$(git status --porcelain)"
           echo "Edition=${EDITION} Branch=${SOURCE_BRANCH} SHA=${SOURCE_SHA}"
 
+      - name: Preflight edition requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s Makefile
+          test -s arch/arm64/configs/gki_defconfig
+
+          case "$EDITION" in
+            Original)
+              installer="packaging/anykernel/anykernel.sh"
+              test -s drivers/kernelsu/Kbuild
+              test -s drivers/kernelsu/uapi/supercall.h
+              ;;
+
+            FinaSU)
+              installer="packaging/finasu/anykernel.sh"
+              test -s drivers/kernelsu/Kbuild
+              test -s drivers/kernelsu/uapi/supercall.h
+              test -s drivers/kernelsu/extension/susfs.c
+              test -s include/linux/susfs.h
+              ;;
+
+            NoRoot)
+              installer=".github/anykernel/anykernel.sh"
+              ;;
+          esac
+
+          test -s "$installer"
+          bash -n "$installer"
+
+          echo "Preflight OK: $EDITION"
+
       - name: Install build dependencies
         shell: bash
         run: |
@@ -82,37 +116,65 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           CLANG_DIR="$RUNNER_TEMP/clang"
+          CLANG_REPO="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+
           mkdir -p "$CLANG_DIR"
 
+          downloaded=""
+          attempt=0
+
           for url in \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/8b6826407e25a197d7cf7ceacab0bf67c11173de/${CLANG_VER}.tar.gz" \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/${CLANG_VER}.tar.gz"
+            "$CLANG_REPO/+archive/$CLANG_PIN/$CLANG_VER.tar.gz"
           do
-            if curl -fL --retry 3 --connect-timeout 30 --max-time 1200 \
-              "$url" -o "$RUNNER_TEMP/hearthroot-clang.tgz" &&
-              tar -xzf "$RUNNER_TEMP/hearthroot-clang.tgz" -C "$CLANG_DIR" &&
-              test -x "$CLANG_DIR/bin/clang"; then
+            attempt=$((attempt + 1))
+
+            stage="$(mktemp -d "$RUNNER_TEMP/clang-stage.XXXXXX")"
+            archive="$RUNNER_TEMP/hearthroot-clang-$attempt.tgz"
+
+            if curl -fL \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 10 \
+              --connect-timeout 30 \
+              --max-time 1200 \
+              "$url" -o "$archive" &&
+              tar -xzf "$archive" -C "$stage" &&
+              test -x "$stage/bin/clang"
+            then
+              cp -a "$stage/." "$CLANG_DIR/"
+              downloaded=yes
               break
             fi
+
+            echo "::warning::Clang archive attempt $attempt failed"
           done
 
-          if ! test -x "$CLANG_DIR/bin/clang"; then
+          if [ -z "$downloaded" ]; then
+            echo "::warning::Using pinned Git fallback"
+
+            source="$RUNNER_TEMP/hearthroot-clang-source"
+
             git clone --depth=1 --filter=blob:none --sparse \
               -b "$CLANG_BRANCH" \
-              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-              "$RUNNER_TEMP/hearthroot-clang-source"
+              "$CLANG_REPO" "$source"
 
-            git -C "$RUNNER_TEMP/hearthroot-clang-source" \
-              sparse-checkout set "$CLANG_VER"
+            git -C "$source" sparse-checkout set "$CLANG_VER"
 
-            cp -a \
-              "$RUNNER_TEMP/hearthroot-clang-source/$CLANG_VER/." \
-              "$CLANG_DIR/"
+            git -C "$source" fetch --no-tags --depth=1 \
+              origin "$CLANG_PIN"
+
+            git -C "$source" checkout --detach "$CLANG_PIN"
+
+            test "$(git -C "$source" rev-parse HEAD)" = "$CLANG_PIN"
+
+            test -x "$source/$CLANG_VER/bin/clang"
+
+            cp -a "$source/$CLANG_VER/." "$CLANG_DIR/"
           fi
 
           test -x "$CLANG_DIR/bin/clang"
-
       - name: Activate Clang
         shell: bash
         run: |
@@ -120,6 +182,13 @@ jobs:
           test -x "$RUNNER_TEMP/clang/bin/clang"
           echo "$RUNNER_TEMP/clang/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/clang/bin/clang" --version
+
+          clang_banner="$("$RUNNER_TEMP/clang/bin/clang" --version | sed -n '1p')"
+
+          if [[ "$clang_banner" != *"clang version 22.0.2"* ]]; then
+            echo "::error::Unexpected Android Clang version: $clang_banner"
+            exit 1
+          fi
 
       - name: Configure and verify edition
         shell: bash
@@ -247,6 +316,8 @@ jobs:
 
           zip_sha="$(sha256sum "out/$zip_name" | awk '{print $1}')"
 
+          clang_version="$("$RUNNER_TEMP/clang/bin/clang" --version | sed -n '1p')"
+
           jq -n \
             --arg edition "$EDITION" \
             --arg branch "$SOURCE_BRANCH" \
@@ -256,7 +327,10 @@ jobs:
             --arg zip_sha256 "$zip_sha" \
             --arg filename "$zip_name" \
             --arg anykernel_sha "$ak3_sha" \
-            '{edition:$edition,branch:$branch,commit:$commit,kernel_release:$kernel_release,image_sha256:$image_sha256,zip_sha256:$zip_sha256,filename:$filename,anykernel_sha:$anykernel_sha}' \
+            --arg clang_revision "$CLANG_VER" \
+            --arg clang_version "$clang_version" \
+            --arg clang_pin "$CLANG_PIN" \
+            '{edition:$edition,branch:$branch,commit:$commit,kernel_release:$kernel_release,image_sha256:$image_sha256,zip_sha256:$zip_sha256,filename:$filename,anykernel_sha:$anykernel_sha,toolchain:{name:"Android Clang",revision:$clang_revision,version:$clang_version,source_commit:$clang_pin}}' \
             > "out/manifest-${EDITION}.json"
 
           echo "ZIP_NAME=$zip_name" >> "$GITHUB_ENV"
