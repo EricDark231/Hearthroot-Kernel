@@ -1,6 +1,7 @@
 name: Hearthroot - Unified release
 
 # Manual only. A successful build-all.yml run is the only kernel source.
+# Release assets are numbered in the requested display order.
 # Dry-run by default: validate and upload a private release candidate artifact.
 on:
   workflow_dispatch:
@@ -309,7 +310,8 @@ jobs:
           download_release_asset(control_repo, control_tag, control_matches[0], control)
           check_zip(control)
 
-          # Order governs the notes and upload arguments, independently of GitHub's UI sorting.
+          # Use numeric prefixes because GitHub sorts release assets by filename.
+          # Prefix only the published copies; source build manifests are preserved.
           ordered = [
               ('FinaSU kernel', ready / manifests['FinaSU']['filename']),
               ('FinaSU Manager', finasu_normal),
@@ -326,38 +328,73 @@ jobs:
               if not path.is_file() or path.stat().st_size == 0:
                   sys.exit(f'Missing release asset {path}')
 
+          source_asset_names = {label: path.name for label, path in ordered}
+          numbered = []
+          for index, (label, path) in enumerate(ordered, start=1):
+              published_path = path.with_name(f'{index:02d}-{path.name}')
+              if published_path.exists():
+                  sys.exit(f'Conflicting release asset: {published_path.name}')
+              path.rename(published_path)
+              numbered.append((label, published_path))
+          ordered = numbered
+          published_names = {label: path.name for label, path in ordered}
+
+          published_manifests = {}
+          for edition, manifest in manifests.items():
+              key = {
+                  'Original': 'BakaSU kernel (Original)',
+                  'FinaSU': 'FinaSU kernel',
+                  'NoRoot': 'NoRoot kernel',
+              }[edition]
+              published_manifests[edition] = {
+                  **manifest,
+                  'source_filename': manifest['filename'],
+                  'filename': published_names[key],
+              }
+
+          release_asset_order = [
+              {
+                  'position': index,
+                  'component': label,
+                  'source_filename': source_asset_names[label],
+                  'filename': path.name,
+                  'sha256': sha256(path),
+              }
+              for index, (label, path) in enumerate(ordered, start=1)
+          ]
+
           notes = ['# Hearthroot Kernel', '',
                    '**Device:** POCO X7 Pro (`rodin`)  ',
                    f'**Validated CI run:** `{run_id}`  ',
                    '**Build:** Android 15 / Linux 6.6.144', '',
                    '## 1. FinaSU', '',
-                   f'- Kernel: `{ordered[0][1].name}`',
-                   f'- Manager oficial: `{finasu_normal.name}`']
+                   f'- Kernel: `{published_names["FinaSU kernel"]}`',
+                   f'- Official Manager: `{published_names["FinaSU Manager"]}`']
           if finasu_spoof:
-              notes.append(f'- Manager Spoofed oficial: `{finasu_spoof.name}`')
+              notes.append(f'- Official Spoofed Manager: `{published_names["FinaSU Spoofed Manager"]}`')
           else:
-              notes.append('- Manager Spoofed: no disponible en la release oficial v1.3.2')
+              notes.append('- Spoofed Manager: not available in the official v1.3.2 release')
           notes += ['', '## 2. BakaSU (Hearthroot Original)', '',
-                    f'- Kernel: `{manifests["Original"]["filename"]}`',
-                    f'- Manager normal: `{bakasu_normal.name}`']
+                    f'- Kernel: `{published_names["BakaSU kernel (Original)"]}`',
+                    f'- Standard Manager: `{published_names["BakaSU Manager"]}`']
           if bakasu_spoof:
-              notes.append(f'- Manager Spoofed: `{bakasu_spoof.name}`')
+              notes.append(f'- Spoofed Manager: `{published_names["BakaSU Spoofed Manager"]}`')
           else:
-              notes.append('- Manager Spoofed: no disponible en los artefactos válidos')
+              notes.append('- Spoofed Manager: not available in the verified artifacts')
           notes += ['', f'**Commit BakaSU:** `{bakasu_run["head_sha"]}`',
                     '', '## 3. NoRoot', '',
-                    f'- Kernel sin root integrado: `{manifests["NoRoot"]["filename"]}`',
+                    f'- Kernel without built-in root: `{published_names["NoRoot kernel"]}`',
                     '', '## 4. Hearthroot Control', '',
-                    f'- Módulo: `{control_name}`', '',
-                    '## Procedencia y seguridad', '',
-                    f'- [Compilación conjunta verificada](https://github.com/{repo}/actions/runs/{run_id})',
-                    '- Cada ZIP incluye su propia imagen y manifiesto SHA256 comprobado.',
-                    '- Instala solo **una** edición del kernel, nunca varias a la vez.',
-                    '- Haz una copia de seguridad de la partición boot antes de flashear.',
-                    '- El éxito de CI no sustituye la prueba de arranque en el dispositivo.', '']
+                    f'- Module: `{published_names["Hearthroot Control"]}`', '',
+                    '## Provenance and safety', '',
+                    f'- [Verified combined build](https://github.com/{repo}/actions/runs/{run_id})',
+                    '- Each kernel ZIP includes its own image, verified against the build manifest.',
+                    '- Install only **one** kernel edition; never flash multiple editions together.',
+                    '- Back up the boot partition before flashing.',
+                    '- Passing CI does not replace boot testing on the device.', '']
           changelog = os.environ.get('RELEASE_CHANGELOG', '').strip()
           if changelog:
-              notes += ['## Cambios', '', changelog, '']
+              notes += ['## Changes', '', changelog, '']
 
           audit = root / 'audit'
           audit.mkdir(exist_ok=True)
@@ -368,7 +405,8 @@ jobs:
           (audit / 'sources.json').write_text(json.dumps({
               'kernel_run_id': int(run_id),
               'kernel_run_head_sha': run['head_sha'],
-              'kernels': manifests,
+              'kernels': published_manifests,
+              'release_asset_order': release_asset_order,
               'finasu_manager_release': f'{finasu_repo}:{finasu_tag}',
               'bakasu_manager_run': bakasu_run['id'],
               'bakasu_manager_sha': bakasu_run['head_sha'],
