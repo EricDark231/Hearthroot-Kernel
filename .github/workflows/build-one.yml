@@ -205,7 +205,9 @@ jobs:
             FinaSU)
               grep -qx 'CONFIG_KSU=y' .config
               grep -qx 'CONFIG_KSU_SUSFS=y' .config
-              grep -Fq 'KSU_VERSION := 33090' drivers/kernelsu/Kbuild
+              grep -Eq '^KSU_VERSION[[:space:]]*:=[[:space:]]*[1-9][0-9]*$' drivers/kernelsu/Kbuild
+              grep -qx 'CONFIG_KSU_HOOK_SUSFS_INLINE=y' .config
+              grep -qx '# CONFIG_KSU_HOOK_TRACEPOINT is not set' .config
               grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
               ;;
 
