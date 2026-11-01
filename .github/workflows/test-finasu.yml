@@ -5,7 +5,7 @@ on:
     branches:
       - Hearthroot-FinaSU
     paths:
-      - '.github/workflows/test-finasu-build.yml'
+      - '.github/workflows/test-finasu.yml'
       - 'arch/**'
       - 'block/**'
       - 'drivers/**'
