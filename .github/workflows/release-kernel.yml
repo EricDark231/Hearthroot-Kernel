@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       tag:
-        description: 'Release tag, for example v1.3.2'
+        description: 'Release tag, for example v1.5.0'
         required: true
         type: string
       title:
@@ -183,28 +183,28 @@ jobs:
               manifests[edition] = manifest
               print(f'OK kernel: {edition} {manifest["commit"][:12]}')
 
-          # 2. Official FinaSU v1.3.2 manager; spoofed only if officially supplied.
-          finasu_repo, finasu_tag = 'LyraVoid/FinaSU', 'v1.3.2'
+          # 2. Official FinaSU v1.4.3 Manager for FinaSU v1.4.2 kernel.
+          finasu_repo, finasu_tag = 'LyraVoid/FinaSU', 'v1.4.3'
           finasu_kbuild_data = gh_json(
               f'repos/{repo}/contents/drivers/kernelsu/Kbuild?ref='
               f'{manifests["FinaSU"]["commit"]}'
           )
           finasu_kbuild = base64.b64decode(
               finasu_kbuild_data['content']).decode('utf-8')
-          if not re.search(r'^KSU_VERSION\s*:=\s*33090\s*$',
+          if not re.search(r'^KSU_VERSION\s*:=\s*33155\s*$',
                            finasu_kbuild, re.MULTILINE):
-              sys.exit('FinaSU source version does not match manager 33090')
-          if 'v1.3.2-9b32bde@Hearthroot-FinaSU' not in finasu_kbuild:
-              sys.exit('FinaSU source identity does not match expected v1.3.2')
+              sys.exit('FinaSU kernel source version does not match 33155')
+          if 'v1.4.2-96104eac@Hearthroot-FinaSU' not in finasu_kbuild:
+              sys.exit('FinaSU source identity does not match expected v1.4.2')
           finasu_assets = gh_json(f'repos/{finasu_repo}/releases/tags/{finasu_tag}')['assets']
-          finasu_normal_name = 'FinaSU_v1.3.2_33090-release.apk'
+          finasu_normal_name = 'FinaSU_v1.4.3_33156-release.apk'
           normal_assets = [a for a in finasu_assets if a['name'] == finasu_normal_name]
           if len(normal_assets) != 1:
-              sys.exit('Official FinaSU v1.3.2 manager APK not found')
+              sys.exit('Official FinaSU v1.4.3 manager APK not found')
           finasu_normal = ready / finasu_normal_name
           download_release_asset(finasu_repo, finasu_tag, normal_assets[0], finasu_normal)
           if sha256(finasu_normal) != (
-              '367e28a646d4f448218ea1fa5d1228fcdd5fb20623c5e22eecb3ea3462fb19e1'
+              'c37761d55d5ab31df053f3bc0a2ffc0d9f539ec7756b85eccee3ddd720d157d7'
           ):
               sys.exit('Official FinaSU manager SHA256 mismatch')
           check_zip(finasu_normal)
@@ -373,7 +373,7 @@ jobs:
           if finasu_spoof:
               notes.append(f'- Official Spoofed Manager: `{published_names["FinaSU Spoofed Manager"]}`')
           else:
-              notes.append('- Spoofed Manager: not available in the official v1.3.2 release')
+              notes.append('- Spoofed Manager: not available in the official v1.4.3 release')
           notes += ['', '## 2. BakaSU (Hearthroot Original)', '',
                     f'- Kernel: `{published_names["BakaSU kernel (Original)"]}`',
                     f'- Standard Manager: `{published_names["BakaSU Manager"]}`']
