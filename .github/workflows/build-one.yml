@@ -206,8 +206,8 @@ jobs:
               grep -qx 'CONFIG_KSU=y' .config
               grep -qx 'CONFIG_KSU_SUSFS=y' .config
               grep -Eq '^KSU_VERSION[[:space:]]*:=[[:space:]]*[1-9][0-9]*$' drivers/kernelsu/Kbuild
-              grep -qx 'CONFIG_KSU_HOOK_SUSFS_INLINE=y' .config
-              grep -qx '# CONFIG_KSU_HOOK_TRACEPOINT is not set' .config
+              grep -qx '# CONFIG_KSU_HOOK_SUSFS_INLINE is not set' .config
+              grep -qx 'CONFIG_KSU_HOOK_TRACEPOINT=y' .config
               grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
               ;;
 
@@ -338,15 +338,15 @@ jobs:
           echo "ZIP_NAME=$zip_name" >> "$GITHUB_ENV"
           echo "Flashable ZIP: $zip_name ($zip_sha)"
 
-      - name: Download verified FinaSU Manager v1.4.3
+      - name: Download verified FinaSU Manager v1.4.4
         if: inputs.edition == 'FinaSU'
         shell: bash
         run: |
           set -euo pipefail
 
-          manager_file="FinaSU_v1.4.3_33156-release.apk"
-          manager_url="https://github.com/LyraVoid/FinaSU/releases/download/v1.4.3/$manager_file"
-          manager_sha="c37761d55d5ab31df053f3bc0a2ffc0d9f539ec7756b85eccee3ddd720d157d7"
+          manager_file="FinaSU_v1.4.4_33167-release.apk"
+          manager_url="https://github.com/LyraVoid/FinaSU/releases/download/v1.4.4/$manager_file"
+          manager_sha="f0a378e62cc62e25ad255bb1d942bdc4c8c8d632543263790bc8a2300244c932"
 
           test -s out/manifest-FinaSU.json
           test ! -e "out/$manager_file"
@@ -362,7 +362,7 @@ jobs:
 
           test -s "out/$manager_file"
 
-          test "$(stat -c%s "out/$manager_file")" = "28612708"
+          test "$(stat -c%s "out/$manager_file")" = "28637284"
 
           printf '%s  %s\n' \
             "$manager_sha" \
@@ -372,7 +372,7 @@ jobs:
           manifest_tmp="$(mktemp "$RUNNER_TEMP/finasu-manifest.XXXXXX")"
 
           jq \
-            --arg manager_version "v1.4.3" \
+            --arg manager_version "v1.4.4" \
             --arg manager_filename "$manager_file" \
             --arg manager_sha256 "$manager_sha" \
             --arg manager_url "$manager_url" \
