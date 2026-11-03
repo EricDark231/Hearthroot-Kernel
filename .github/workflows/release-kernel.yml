@@ -183,8 +183,8 @@ jobs:
               manifests[edition] = manifest
               print(f'OK kernel: {edition} {manifest["commit"][:12]}')
 
-          # 2. Official FinaSU v1.4.3 Manager for FinaSU v1.4.2 kernel.
-          finasu_repo, finasu_tag = 'LyraVoid/FinaSU', 'v1.4.3'
+          # 2. Official FinaSU v1.4.4 Manager for FinaSU v1.4.2 kernel.
+          finasu_repo, finasu_tag = 'LyraVoid/FinaSU', 'v1.4.4'
           finasu_kbuild_data = gh_json(
               f'repos/{repo}/contents/drivers/kernelsu/Kbuild?ref='
               f'{manifests["FinaSU"]["commit"]}'
@@ -197,14 +197,14 @@ jobs:
           if 'v1.4.2-96104eac@Hearthroot-FinaSU' not in finasu_kbuild:
               sys.exit('FinaSU source identity does not match expected v1.4.2')
           finasu_assets = gh_json(f'repos/{finasu_repo}/releases/tags/{finasu_tag}')['assets']
-          finasu_normal_name = 'FinaSU_v1.4.3_33156-release.apk'
+          finasu_normal_name = 'FinaSU_v1.4.4_33167-release.apk'
           normal_assets = [a for a in finasu_assets if a['name'] == finasu_normal_name]
           if len(normal_assets) != 1:
-              sys.exit('Official FinaSU v1.4.3 manager APK not found')
+              sys.exit('Official FinaSU v1.4.4 manager APK not found')
           finasu_normal = ready / finasu_normal_name
           download_release_asset(finasu_repo, finasu_tag, normal_assets[0], finasu_normal)
           if sha256(finasu_normal) != (
-              'c37761d55d5ab31df053f3bc0a2ffc0d9f539ec7756b85eccee3ddd720d157d7'
+              'f0a378e62cc62e25ad255bb1d942bdc4c8c8d632543263790bc8a2300244c932'
           ):
               sys.exit('Official FinaSU manager SHA256 mismatch')
           check_zip(finasu_normal)
@@ -373,7 +373,7 @@ jobs:
           if finasu_spoof:
               notes.append(f'- Official Spoofed Manager: `{published_names["FinaSU Spoofed Manager"]}`')
           else:
-              notes.append('- Spoofed Manager: not available in the official v1.4.3 release')
+              notes.append('- Spoofed Manager: not available in the official v1.4.4 release')
           notes += ['', '## 2. BakaSU (Hearthroot Original)', '',
                     f'- Kernel: `{published_names["BakaSU kernel (Original)"]}`',
                     f'- Standard Manager: `{published_names["BakaSU Manager"]}`']
