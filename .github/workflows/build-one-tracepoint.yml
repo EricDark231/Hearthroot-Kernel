@@ -1,0 +1,413 @@
+name: Hearthroot - Tracepoint TEST compiler
+
+on:
+  workflow_call:
+    inputs:
+      edition:
+        description: Original, FinaSU or NoRoot
+        type: string
+        required: true
+      source_branch:
+        description: Official source branch
+        type: string
+        required: true
+      source_sha:
+        description: Full 40-character source commit
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Build ${{ inputs.edition }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      EDITION: ${{ inputs.edition }}
+      SOURCE_BRANCH: ${{ inputs.source_branch }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      KBUILD_BUILD_USER: EricDark231
+      KBUILD_BUILD_HOST: Hearthroot
+      CLANG_VER: clang-r596125
+      CLANG_BRANCH: mirror-goog-main-llvm-toolchain-source
+      CLANG_PIN: 8b6826407e25a197d7cf7ceacab0bf67c11173de
+
+    steps:
+      - name: Validate requested edition and source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${EDITION}:${SOURCE_BRANCH}" in
+            Original:hearthroot-dev|FinaSU:experiment/finasu-v1.4.2-tracepoint-neobackup|NoRoot:hearthroot-noroot) ;;
+            *) echo "::error::Invalid edition/branch: ${EDITION}:${SOURCE_BRANCH}"; exit 1 ;;
+          esac
+          if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Expected a pinned 40-character Git SHA"
+            exit 1
+          fi
+
+      - name: Checkout exact kernel commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          test -z "$(git status --porcelain)"
+          echo "Edition=${EDITION} Branch=${SOURCE_BRANCH} SHA=${SOURCE_SHA}"
+
+      - name: Preflight edition requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s Makefile
+          test -s arch/arm64/configs/gki_defconfig
+
+          case "$EDITION" in
+            Original)
+              installer="packaging/anykernel/anykernel.sh"
+              test -s drivers/kernelsu/Kbuild
+              test -s drivers/kernelsu/uapi/supercall.h
+              ;;
+
+            FinaSU)
+              installer="packaging/finasu/anykernel.sh"
+              test -s drivers/kernelsu/Kbuild
+              test -s drivers/kernelsu/uapi/supercall.h
+              test -s drivers/kernelsu/extension/susfs.c
+              test -s include/linux/susfs.h
+              ;;
+
+            NoRoot)
+              installer=".github/anykernel/anykernel.sh"
+              ;;
+          esac
+
+          test -s "$installer"
+          bash -n "$installer"
+
+          echo "Preflight OK: $EDITION"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flex bison bc libelf-dev libssl-dev dwarves lz4 zip unzip
+
+      - name: Cache Android clang-r596125
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang
+          key: hearthroot-android-clang-r596125-8b682640-v1
+
+      - name: Download Android Clang
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          CLANG_REPO="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+
+          mkdir -p "$CLANG_DIR"
+
+          downloaded=""
+          attempt=0
+
+          for url in \
+            "$CLANG_REPO/+archive/$CLANG_PIN/$CLANG_VER.tar.gz"
+          do
+            attempt=$((attempt + 1))
+
+            stage="$(mktemp -d "$RUNNER_TEMP/clang-stage.XXXXXX")"
+            archive="$RUNNER_TEMP/hearthroot-clang-$attempt.tgz"
+
+            if curl -fL \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 10 \
+              --connect-timeout 30 \
+              --max-time 1200 \
+              "$url" -o "$archive" &&
+              tar -xzf "$archive" -C "$stage" &&
+              test -x "$stage/bin/clang"
+            then
+              cp -a "$stage/." "$CLANG_DIR/"
+              downloaded=yes
+              break
+            fi
+
+            echo "::warning::Clang archive attempt $attempt failed"
+          done
+
+          if [ -z "$downloaded" ]; then
+            echo "::warning::Using pinned Git fallback"
+
+            source="$RUNNER_TEMP/hearthroot-clang-source"
+
+            git clone --depth=1 --filter=blob:none --sparse \
+              -b "$CLANG_BRANCH" \
+              "$CLANG_REPO" "$source"
+
+            git -C "$source" sparse-checkout set "$CLANG_VER"
+
+            git -C "$source" fetch --no-tags --depth=1 \
+              origin "$CLANG_PIN"
+
+            git -C "$source" checkout --detach "$CLANG_PIN"
+
+            test "$(git -C "$source" rev-parse HEAD)" = "$CLANG_PIN"
+
+            test -x "$source/$CLANG_VER/bin/clang"
+
+            cp -a "$source/$CLANG_VER/." "$CLANG_DIR/"
+          fi
+
+          test -x "$CLANG_DIR/bin/clang"
+      - name: Activate Clang
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$RUNNER_TEMP/clang/bin/clang"
+          echo "$RUNNER_TEMP/clang/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/clang/bin/clang" --version
+
+          clang_banner="$("$RUNNER_TEMP/clang/bin/clang" --version | sed -n '1p')"
+
+          if [[ "$clang_banner" != *"clang version 22.0.2"* ]]; then
+            echo "::error::Unexpected Android Clang version: $clang_banner"
+            exit 1
+          fi
+
+      - name: Configure and verify edition
+        shell: bash
+        run: |
+          set -euo pipefail
+          make ARCH=arm64 LLVM=1 gki_defconfig
+
+          case "$EDITION" in
+            Original)
+              grep -qx 'CONFIG_KSU=y' .config
+              grep -Eq '^KSU_COMMIT_SHA[[:space:]]*:=[[:space:]]*[0-9a-f]{8}$' drivers/kernelsu/Kbuild
+              ;;
+
+            FinaSU)
+              grep -qx 'CONFIG_KSU=y' .config
+              grep -qx 'CONFIG_KSU_SUSFS=y' .config
+              grep -Eq '^KSU_VERSION[[:space:]]*:=[[:space:]]*[1-9][0-9]*$' drivers/kernelsu/Kbuild
+              grep -qx '# CONFIG_KSU_HOOK_SUSFS_INLINE is not set' .config
+              grep -qx 'CONFIG_KSU_HOOK_TRACEPOINT=y' .config
+              grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+              ;;
+
+            NoRoot)
+              ! grep -qx 'CONFIG_KSU=y' .config
+              ! grep -qx 'CONFIG_KSU_SUSFS=y' .config
+              grep -qx 'CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y' .config
+              grep -qx 'CONFIG_MQ_IOSCHED_KYBER=y' .config
+              grep -qx 'CONFIG_MQ_IOSCHED_DEADLINE=y' .config
+              ! grep -qx 'CONFIG_MQ_IOSCHED_ADIOS=y' .config
+              ;;
+          esac
+
+          grep -qx 'CONFIG_SECURITY_SELINUX=y' .config
+          echo "Validated ${EDITION} gki_defconfig"
+
+      - name: Compile arm64 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make ARCH=arm64 LLVM=1 -j4 Image Image.lz4
+
+          test -s vmlinux
+          test -s System.map
+          test -s arch/arm64/boot/Image
+          test -s arch/arm64/boot/Image.lz4
+
+          magic="$(od -An -tx1 -N4 arch/arm64/boot/Image.lz4 | tr -d ' \n')"
+
+          if [ "$magic" != "02214c18" ]; then
+            lz4 -f -l -9 \
+              arch/arm64/boot/Image \
+              arch/arm64/boot/Image.lz4
+
+            magic="$(od -An -tx1 -N4 arch/arm64/boot/Image.lz4 | tr -d ' \n')"
+          fi
+
+          test "$magic" = "02214c18"
+
+          release="$(tr -d '\r\n' < include/config/kernel.release)"
+          [[ "$release" =~ ^[A-Za-z0-9._+-]+$ ]]
+
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+
+          sha256sum arch/arm64/boot/Image.lz4
+
+      - name: Package flashable AnyKernel3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$EDITION" in
+            Original) installer="packaging/anykernel/anykernel.sh" ;;
+            FinaSU) installer="packaging/finasu/anykernel.sh" ;;
+            NoRoot) installer=".github/anykernel/anykernel.sh" ;;
+          esac
+
+          test -s "$installer"
+
+          git clone --depth=1 --branch gki-2.0 \
+            https://github.com/WildKernels/AnyKernel3.git AnyKernel3
+
+          ak3_sha="$(git -C AnyKernel3 rev-parse HEAD)"
+
+          update_binary="AnyKernel3/META-INF/com/google/android/update-binary"
+
+          test -f "$update_binary"
+          test "$(grep -Fc -- '$bb --install -s bin;' "$update_binary")" -eq 1
+
+          sed -i 's/--install -s bin;/--install bin;/' "$update_binary"
+
+          cp arch/arm64/boot/Image.lz4 AnyKernel3/Image
+          cp "$installer" AnyKernel3/anykernel.sh
+
+          sed -i \
+            "s|@KERNEL_RELEASE@|${KERNEL_RELEASE}|g" \
+            AnyKernel3/anykernel.sh
+
+          ! grep -Fq '@KERNEL_RELEASE@' AnyKernel3/anykernel.sh
+
+          bash -n AnyKernel3/anykernel.sh
+          test -s AnyKernel3/tools/ak3-core.sh
+          test -s AnyKernel3/META-INF/com/google/android/update-binary
+
+          mkdir -p out
+
+          zip_name="Hearthroot-${EDITION}-rodin-${KERNEL_RELEASE}-Tracepoint-TEST-AnyKernel3.zip"
+
+          (
+            cd AnyKernel3
+
+            zip -q -r -9 "../out/$zip_name" \
+              anykernel.sh tools LICENSE Image banner META-INF
+          )
+
+          unzip -tq "out/$zip_name"
+
+          for required in anykernel.sh tools/ak3-core.sh Image META-INF/com/google/android/update-binary; do
+            unzip -Z -1 "out/$zip_name" |
+              grep -Fx "$required" >/dev/null
+          done
+
+          source_sha="$(sha256sum arch/arm64/boot/Image.lz4 | awk '{print $1}')"
+          packed_sha="$(unzip -p "out/$zip_name" Image | sha256sum | awk '{print $1}')"
+
+          test "$source_sha" = "$packed_sha"
+
+          zip_sha="$(sha256sum "out/$zip_name" | awk '{print $1}')"
+
+          clang_version="$("$RUNNER_TEMP/clang/bin/clang" --version | sed -n '1p')"
+
+          jq -n \
+            --arg edition "$EDITION" \
+            --arg branch "$SOURCE_BRANCH" \
+            --arg commit "$SOURCE_SHA" \
+            --arg kernel_release "$KERNEL_RELEASE" \
+            --arg image_sha256 "$source_sha" \
+            --arg zip_sha256 "$zip_sha" \
+            --arg filename "$zip_name" \
+            --arg anykernel_sha "$ak3_sha" \
+            --arg clang_revision "$CLANG_VER" \
+            --arg clang_version "$clang_version" \
+            --arg clang_pin "$CLANG_PIN" \
+            '{edition:$edition,branch:$branch,commit:$commit,kernel_release:$kernel_release,image_sha256:$image_sha256,zip_sha256:$zip_sha256,filename:$filename,anykernel_sha:$anykernel_sha,toolchain:{name:"Android Clang",revision:$clang_revision,version:$clang_version,source_commit:$clang_pin}}' \
+            > "out/manifest-${EDITION}.json"
+
+          echo "ZIP_NAME=$zip_name" >> "$GITHUB_ENV"
+          echo "Flashable ZIP: $zip_name ($zip_sha)"
+
+      - name: Download verified FinaSU Manager v1.4.3
+        if: inputs.edition == 'FinaSU'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manager_file="FinaSU_v1.4.3_33156-release.apk"
+          manager_url="https://github.com/LyraVoid/FinaSU/releases/download/v1.4.3/$manager_file"
+          manager_sha="c37761d55d5ab31df053f3bc0a2ffc0d9f539ec7756b85eccee3ddd720d157d7"
+
+          test -s out/manifest-FinaSU.json
+          test ! -e "out/$manager_file"
+
+          curl -fL \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --max-time 900 \
+            "$manager_url" \
+            -o "out/$manager_file"
+
+          test -s "out/$manager_file"
+
+          test "$(stat -c%s "out/$manager_file")" = "28612708"
+
+          printf '%s  %s\n' \
+            "$manager_sha" \
+            "out/$manager_file" |
+            sha256sum --check
+
+          manifest_tmp="$(mktemp "$RUNNER_TEMP/finasu-manifest.XXXXXX")"
+
+          jq \
+            --arg manager_version "v1.4.3" \
+            --arg manager_filename "$manager_file" \
+            --arg manager_sha256 "$manager_sha" \
+            --arg manager_url "$manager_url" \
+            '.manager = {
+              version:$manager_version,
+              filename:$manager_filename,
+              sha256:$manager_sha256,
+              source:$manager_url
+            }' \
+            out/manifest-FinaSU.json > "$manifest_tmp"
+
+          mv "$manifest_tmp" out/manifest-FinaSU.json
+
+          jq -e \
+            --arg sha "$manager_sha" \
+            '.manager.sha256 == $sha' \
+            out/manifest-FinaSU.json >/dev/null
+
+          echo "FinaSU Manager verified: $manager_file"
+
+      - name: Upload ZIP and build manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ inputs.edition }}-Tracepoint-TEST
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build summary
+        shell: bash
+        run: |
+          {
+            echo "### Hearthroot ${EDITION}"
+            echo "- Source: ${SOURCE_BRANCH} @ ${SOURCE_SHA}"
+            echo "- Kernel: ${KERNEL_RELEASE}"
+            echo "- Flashable ZIP: ${ZIP_NAME}"
+            echo "- Clang: ${CLANG_VER}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,18 @@
+name: Hearthroot - FinaSU Tracepoint TEST
+
+on:
+  push:
+    branches:
+      - experiment/finasu-v1.4.2-tracepoint-neobackup
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: FinaSU Tracepoint diagnostic build
+    uses: ./.github/workflows/build-one-tracepoint.yml
+    with:
+      edition: FinaSU
+      source_branch: experiment/finasu-v1.4.2-tracepoint-neobackup
+      source_sha: ${{ github.sha }}
